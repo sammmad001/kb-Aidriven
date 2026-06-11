@@ -60,6 +60,16 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.ECS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
+      - name: Upload scripts first
+        run: |
+          for script in backup.sh deploy.sh rollback.sh pre-deploy-check.sh; do
+            if [ -f "$script" ]; then
+              scp -o ConnectTimeout=10 "$script" ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/
+            fi
+          done
+          ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
+            "chmod +x /opt/knowledge-base/*.sh 2>/dev/null || true"
+
       - name: Backup on ECS
         run: |
           ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
