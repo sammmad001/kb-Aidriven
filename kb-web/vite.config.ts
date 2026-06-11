@@ -6,7 +6,13 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
+      '/api': {
+        target: 'http://43.106.12.79:8080',
+        changeOrigin: true,
+        headers: {
+          Authorization: 'Bearer dev-token',
+        },
+      },
     },
   },
   base: '/ui/',
