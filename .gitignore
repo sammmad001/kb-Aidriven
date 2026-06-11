@@ -48,4 +48,5 @@ data/
 backups/
 
 # === Qoder IDE ===
-.qoder/
+.qoder/**
+!.qoder/rules/
