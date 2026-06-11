@@ -1,0 +1,9 @@
+# kb/ 子模块补充规则
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+raw/sources/*
+!raw/sources/.gitkeep
+wiki/*
+!wiki/.gitkeep

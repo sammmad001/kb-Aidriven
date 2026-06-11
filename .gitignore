@@ -1,0 +1,51 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+*.egg
+.eggs/
+
+# === Virtual Environments ===
+venv/
+.venv/
+env/
+
+# === Environment Variables (real secrets) ===
+.env
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+._*
+
+# === Node.js ===
+node_modules/
+
+# === pytest ===
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# === Archives (built locally) ===
+*.tar.gz
+*.zip
+
+# === JDK tools (local install, not source) ===
+tools/
+
+# === Data directories ===
+data/
+backups/
+
+# === Qoder IDE ===
+.qoder/
