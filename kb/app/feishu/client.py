@@ -25,6 +25,10 @@ class FeishuClient:
         self._token: str = ""
         self._token_expires: float = 0.0
 
+    async def close(self) -> None:
+        """Close the underlying httpx client."""
+        await self._http.aclose()
+
     # ------------------------------------------------------------------
     # Token management
     # ------------------------------------------------------------------

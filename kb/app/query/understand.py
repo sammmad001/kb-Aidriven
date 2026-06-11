@@ -120,29 +120,35 @@ class QueryUnderstander:
     # ------------------------------------------------------------------
 
     async def _extract_entities(self, question: str) -> list[str]:
-        """Extract entity names from query and map to Neo4j nodes."""
-        entities: list[str] = []
-
-        # Try to find entities by matching against Neo4j
+        """Extract entity names from query and map to Neo4j nodes (batched — PERF-01 fix)."""
         # Split query into potential entity terms (Chinese chars, English words)
         terms = re.findall(r'[\u4e00-\u9fff]+|[A-Za-z][A-Za-z0-9_]*', question)
 
-        for term in terms:
-            if len(term) < 2:
-                continue
-            # Skip common stop words
-            stop_words = {"是什么", "什么", "为什么", "怎么", "如何", "哪些",
-                          "什么", "所有", "整体", "全局", "关系", "区别",
-                          "what", "how", "why", "the", "and", "for", "are", "is"}
-            if term in stop_words:
-                continue
+        # Filter short terms and stop words
+        stop_words = {"是什么", "什么", "为什么", "怎么", "如何", "哪些",
+                      "所有", "整体", "全局", "关系", "区别",
+                      "what", "how", "why", "the", "and", "for", "are", "is"}
+        valid_terms = [t for t in terms if len(t) >= 2 and t not in stop_words]
 
-            # Check Neo4j for matching entities
-            results = await self._db.search_entities(term, limit=1)
-            if results:
-                entities.append(results[0]["name"])
+        if not valid_terms:
+            return []
 
-        return list(dict.fromkeys(entities))  # Deduplicate preserving order
+        # Batch search: use a single Cypher query with all terms
+        records = await self._db.execute_read(
+            """
+            MATCH (n)
+            WHERE (n:Entity OR n:Concept)
+              AND (n.id CONTAINS $kw0 OR n.name CONTAINS $kw0
+                   OR n.id CONTAINS $kw1 OR n.name CONTAINS $kw1
+                   OR n.id CONTAINS $kw2 OR n.name CONTAINS $kw2
+                   OR n.id CONTAINS $kw3 OR n.name CONTAINS $kw3
+                   OR n.id CONTAINS $kw4 OR n.name CONTAINS $kw4)
+            RETURN n.id AS id, n.name AS name
+            LIMIT 10
+            """,
+            {f"kw{i}": t for i, t in enumerate(valid_terms[:5])},
+        )
+        return [r["name"] for r in records if r.get("name")]
 
     def _extract_keywords(self, question: str) -> list[str]:
         """Extract keywords from query."""

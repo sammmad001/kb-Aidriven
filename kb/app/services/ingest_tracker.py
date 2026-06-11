@@ -133,6 +133,7 @@ class IngestTracker:
     # Queries
     # ------------------------------------------------------------------
 
+    # TODO: used by scheduler or deprecated — currently unused, kept for future dedup integration
     async def is_duplicate(self, content_hash: str) -> bool:
         """Check if content_hash already exists and was completed."""
         records = await self._db.execute_read(

@@ -80,7 +80,7 @@ class IngestOptions(BaseModel):
 
 class IngestRequest(BaseModel):
     """API request body for knowledge ingestion."""
-    source: str
+    source: str = Field(..., max_length=100_000)
     options: IngestOptions = Field(default_factory=IngestOptions)
 
 
@@ -180,7 +180,7 @@ class IngestResult(BaseModel):
 
 class QueryRequest(BaseModel):
     """API request body for knowledge query."""
-    question: str
+    question: str = Field(..., max_length=5000)
 
 
 class QueryUnderstanding(BaseModel):
@@ -228,6 +228,7 @@ class TaskStatus(BaseModel):
     progress: str = "queued"
     result: Optional[IngestResult] = None
     error: Optional[str] = None
+    finished_at: Optional[float] = None  # time.time() when completed/failed
 
 
 # ---------------------------------------------------------------------------

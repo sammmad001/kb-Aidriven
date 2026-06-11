@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import graph, ingest, ingest_adapters, query, tasks
 from app.config import get_settings
@@ -71,6 +72,19 @@ async def lifespan(app: FastAPI):
     global _ingest_tracker, _ingest_retry_scheduler
     settings = get_settings()
 
+    # Validate production configuration
+    if settings.environment == "production":
+        issues = settings.validate_production_config()
+        if issues:
+            for issue in issues:
+                logger.error("Production config issue: %s", issue)
+            raise RuntimeError(
+                f"Production config validation failed: {'; '.join(issues)}"
+            )
+        logger.info("Production config validation passed")
+    else:
+        logger.info("Running in dev mode — skipping production config validation")
+
     # Initialize ingest pipeline
     _ingest_pipeline = IngestPipeline(settings)
     await _ingest_pipeline.initialize()
@@ -126,7 +140,15 @@ async def lifespan(app: FastAPI):
         _ingest_retry_scheduler.shutdown()
     if _feishu_ws_client:
         await _feishu_ws_client.stop()
-    await _ingest_pipeline.shutdown()
+    # Close httpx clients to prevent resource leaks (RES-02/RES-03 fix)
+    if _feishu_client:
+        await _feishu_client.close()
+    if _ingest_pipeline:
+        if _ingest_pipeline._llm:
+            await _ingest_pipeline._llm.close()
+        if _ingest_pipeline._preprocessor:
+            await _ingest_pipeline._preprocessor.close()
+        await _ingest_pipeline.shutdown()
     logger.info("Knowledge Base API shut down")
 
 
@@ -135,6 +157,17 @@ app = FastAPI(
     description="Graph-First 个人知识库系统 API",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+# CORS middleware
+_cors_origins = get_settings().cors_origins
+_origins_list = [o.strip() for o in _cors_origins.split(",")] if _cors_origins != "*" else ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Register routers

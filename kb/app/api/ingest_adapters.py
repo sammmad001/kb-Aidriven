@@ -10,7 +10,6 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.adapters.base import KnowledgeAdapter
 from app.adapters.miromind import MiroMindAdapter
 from app.api.deps import verify_api_token
 from app.models import IngestRequest, IngestResult
@@ -172,7 +171,7 @@ async def ingest_miromind(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(verify_api_token)])
 async def ingest_status() -> dict:
     """Get aggregate ingest statistics across all channels."""
     if _tracker is None:
@@ -181,7 +180,7 @@ async def ingest_status() -> dict:
     return {"ok": True, "stats": stats}
 
 
-@router.get("/status/{source_id}")
+@router.get("/status/{source_id}", dependencies=[Depends(verify_api_token)])
 async def ingest_source_status(source_id: str) -> dict:
     """Get status of a specific ingest record by source_id."""
     if _tracker is None:
@@ -192,7 +191,7 @@ async def ingest_source_status(source_id: str) -> dict:
     return {"ok": True, "record": record}
 
 
-@router.post("/retry")
+@router.post("/retry", dependencies=[Depends(verify_api_token)])
 async def ingest_retry_all() -> dict:
     """Trigger retry of all failed ingest records (manual override)."""
     if _tracker is None:
@@ -201,7 +200,7 @@ async def ingest_retry_all() -> dict:
     return {"ok": True, "message": "Use the scheduler or retry individual records"}
 
 
-@router.post("/retry/{source_id}")
+@router.post("/retry/{source_id}", dependencies=[Depends(verify_api_token)])
 async def ingest_retry_one(source_id: str, bg: BackgroundTasks) -> dict:
     """Manually retry a single failed ingest record."""
     if _pipeline is None or _tracker is None:

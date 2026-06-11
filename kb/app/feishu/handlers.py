@@ -24,6 +24,9 @@ from app.models import GraphStats, IngestRequest, InputFormat, QueryRequest
 
 logger = logging.getLogger(__name__)
 
+# Maximum file size for uploads (20 MB)
+MAX_FILE_SIZE = 20 * 1024 * 1024
+
 
 # ======================================================================
 # Message Deduplication
@@ -53,6 +56,9 @@ class _MessageDeduplicator:
 
 
 _dedup = _MessageDeduplicator()
+
+# Prevent GC of background tasks (RES-01 fix)
+_background_tasks: set[asyncio.Task] = set()
 
 # Module-level dependencies (set by init_handlers)
 _pipeline: IngestPipeline | None = None
@@ -149,6 +155,9 @@ async def handle_image(content: dict, message_id: str) -> None:
         logger.error("Image download failed: %s", exc)
         await send_error(message_id, "图片下载失败")
         return
+    if len(image_bytes) > MAX_FILE_SIZE:
+        await send_error(message_id, f"文件过大（上限 {MAX_FILE_SIZE // 1024 // 1024}MB）")
+        return
     image_b64 = base64.b64encode(image_bytes).decode()
 
     await run_ingest(
@@ -172,6 +181,9 @@ async def handle_file(content: dict, message_id: str) -> None:
     except Exception as exc:
         logger.error("File download failed for %s: %s", file_name, exc)
         await send_error(message_id, f"文件下载失败: {file_name}")
+        return
+    if len(file_bytes) > MAX_FILE_SIZE:
+        await send_error(message_id, f"文件过大（上限 {MAX_FILE_SIZE // 1024 // 1024}MB）")
         return
     file_b64 = base64.b64encode(file_bytes).decode()
 
@@ -203,6 +215,9 @@ async def handle_audio(content: dict, message_id: str) -> None:
     except Exception as exc:
         logger.error("Audio download failed: %s", exc)
         await send_error(message_id, "语音下载失败")
+        return
+    if len(audio_bytes) > MAX_FILE_SIZE:
+        await send_error(message_id, f"文件过大（上限 {MAX_FILE_SIZE // 1024 // 1024}MB）")
         return
     audio_b64 = base64.b64encode(audio_bytes).decode()
 
@@ -348,7 +363,7 @@ async def run_ingest(
 
     # Step 2: Run pipeline in background, send complete card when done
     task_id = uuid.uuid4().hex[:8]
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_pipeline_and_send(
             source=source,
             format=format,
@@ -358,6 +373,8 @@ async def run_ingest(
             file_mime=file_mime,
         )
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _run_pipeline_and_send(
@@ -425,5 +442,5 @@ async def send_error(message_id: str, message: str) -> None:
         card = build_error_card("处理错误", message, "请稍后重试或使用 /help 查看帮助")
         try:
             await _feishu_client.reply_message(message_id, card)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to send error card for message %s: %s", message_id, exc)

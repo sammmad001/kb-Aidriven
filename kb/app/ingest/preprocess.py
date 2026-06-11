@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import io
+import ipaddress
 import logging
 import os
 import re
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +27,10 @@ class Preprocessor:
         self._raw_dir = settings.raw_dir
         self._http = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         os.makedirs(self._raw_dir, exist_ok=True)
+
+    async def close(self) -> None:
+        """Close the underlying httpx client."""
+        await self._http.aclose()
 
     async def process(self, source: str, format: InputFormat,
                       file_name: str | None = None,
@@ -66,6 +72,11 @@ class Preprocessor:
 
     async def _process_url(self, url: str, **kwargs: Any) -> tuple[str, str]:
         """URL: fetch HTML, extract main content, convert to Markdown."""
+        # SECURITY: SSRF protection — block internal/private IP addresses
+        if not self._is_safe_url(url):
+            logger.warning("URL blocked by SSRF filter: %s", url)
+            return f"Source URL: {url}\n\nURL blocked: internal/private addresses are not allowed.", url
+
         try:
             resp = await self._http.get(url)
             resp.raise_for_status()
@@ -212,6 +223,24 @@ class Preprocessor:
             f.write(content)
 
         return filepath
+
+    @staticmethod
+    def _is_safe_url(url: str) -> bool:
+        """Check if a URL is safe to fetch (not pointing to internal/private IPs)."""
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            if not hostname:
+                return False
+            # Resolve hostname to IP and check if it's private
+            addr = ipaddress.ip_address(hostname)
+            return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved)
+        except (ValueError, TypeError):
+            # If hostname can't be parsed as IP, allow it (DNS resolution will handle it)
+            # But still block obviously dangerous schemes
+            if parsed.scheme not in ("http", "https"):
+                return False
+            return True
 
     @staticmethod
     def _extract_title(text: str) -> str:

@@ -101,17 +101,22 @@ class Analyzer:
             logger.warning("LLM output was not valid JSON, using fallback")
             return self._parse_fallback(result.get("raw", ""))
 
-        # 5. Verify entity existence in Neo4j
+        # 5. Verify entity existence in Neo4j (batched — PERF-01 fix)
+        raw_entities = [
+            {"name": ent.get("name", "")}
+            for ent in result.get("entities", [])
+            if ent.get("name")
+        ]
+        existence_map = await self._batch_check_entity_existence(
+            [e["name"] for e in raw_entities]
+        )
         entities = []
-        for ent in result.get("entities", []):
-            name = ent.get("name", "")
-            if not name:
-                continue
-            node_id = await self._check_entity_existence(name)
-            exists = node_id is not None
+        for item in raw_entities:
+            name = item["name"]
+            node_id = existence_map.get(name)
             entities.append(EntityInfo(
                 name=name,
-                exists=exists,
+                exists=node_id is not None,
                 node_id=node_id,
             ))
 
@@ -158,6 +163,36 @@ class Analyzer:
             gaps=result.get("gaps", []),
             compile_suggestion=result.get("compile_suggestion", ""),
         )
+
+    async def _batch_check_entity_existence(self, names: list[str]) -> dict[str, str | None]:
+        """Batch check entity existence in Neo4j. Returns {name: node_id_or_None}."""
+        if not names:
+            return {}
+        result: dict[str, str | None] = {n: None for n in names}
+        normalized_map: dict[str, str] = {}
+        for n in names:
+            normalized_map[n.replace(" ", "_")] = n
+
+        all_ids = list(set(names + list(normalized_map.keys())))
+        records = await self._db.execute_read(
+            "MATCH (n) WHERE n.id IN $ids OR n.name IN $names RETURN n.id AS id, n.name AS name",
+            {"ids": all_ids, "names": names},
+        )
+        # Build reverse lookup: id -> id, name -> id, normalized_id -> id
+        id_lookup: dict[str, str] = {}
+        for r in records:
+            nid = r["id"]
+            nname = r.get("name", "")
+            id_lookup[nid] = nid
+            id_lookup[nname] = nid
+            id_lookup[nid.replace(" ", "_")] = nid
+
+        for name in names:
+            if name in id_lookup:
+                result[name] = id_lookup[name]
+            elif name.replace(" ", "_") in id_lookup:
+                result[name] = id_lookup[name.replace(" ", "_")]
+        return result
 
     async def _check_entity_existence(self, entity_name: str) -> str | None:
         """Check if entity exists in Neo4j by exact id or name match."""

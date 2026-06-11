@@ -1,4 +1,14 @@
-"""Lint checker: quality checks for the knowledge graph."""
+"""Lint checker: quality checks for the knowledge graph.
+
+Implementation status (4/7 checks implemented):
+  ✅ Orphan nodes
+  ✅ Naming consistency
+  ✅ Missing relations (low degree)
+  ✅ Stale content detection
+  ❌ Factual contradiction detection (TODO)
+  ❌ Outdated content detection (TODO)
+  ❌ Implicit entity detection (TODO)
+"""
 
 from __future__ import annotations
 

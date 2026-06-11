@@ -59,6 +59,8 @@ class GraphProcessor:
         self._db = db
         self._compile_model = compile_model
         self._reasoning_model = reasoning_model
+        # Prevent GC of background tasks (RES-01 fix)
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def process(
         self,
@@ -94,16 +96,20 @@ class GraphProcessor:
 
         # Deferred: rich LLM content generation in background (fire-and-forget)
         if node_actions:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._enrich_content_background(node_actions, raw_content, analysis, raw_path)
             )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         # 3d. Write explicit relations (batched)
         edge_ids = await self._create_explicit_edges_batch(analysis.relations)
         result.explicit_edges.extend(edge_ids)
 
         # 3e+3f. Discover and write implicit relations in background (fire-and-forget)
-        asyncio.create_task(self._discover_and_write_implicit(result.affected_nodes))
+        task = asyncio.create_task(self._discover_and_write_implicit(result.affected_nodes))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
         # 3g. Update graph structure (batched PageRank)
         await self._update_graph_structure(result.affected_nodes)
@@ -436,7 +442,13 @@ class GraphProcessor:
     # ------------------------------------------------------------------
 
     async def _update_graph_structure(self, affected_nodes: list[str]) -> None:
-        """Batch update graph structure using UNWIND."""
+        """Batch update graph structure using UNWIND.
+
+        NOTE (CQ-01): This uses a simplified in-degree heuristic
+        (page_rank = in_degree / 10.0) rather than true GDS PageRank.
+        Suitable for small personal knowledge graphs (<1000 nodes).
+        Upgrade to GDS PageRank when graph size warrants it.
+        """
         if not affected_nodes:
             return
         query = """

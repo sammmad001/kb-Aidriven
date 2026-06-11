@@ -1,9 +1,12 @@
 """Configuration management using pydantic-settings."""
 
+import logging
 from functools import lru_cache
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -12,7 +15,7 @@ class Settings(BaseSettings):
     # --- Neo4j ---
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "your_neo4j_password"
+    neo4j_password: str = ""  # SECURITY: No default — must be set via env
 
     # --- LLM ---
     llm_provider: Literal["ollama", "dashscope"] = "ollama"
@@ -39,7 +42,7 @@ class Settings(BaseSettings):
     feishu_use_ws: bool = False  # True=WebSocket长连接, False=Webhook HTTP推送
 
     # --- Knowledge API ---
-    knowledge_api_token: str = "dev-token"
+    knowledge_api_token: str = ""  # SECURITY: No default — must be set via env
 
     # --- Paths ---
     raw_dir: str = "raw/sources"
@@ -53,12 +56,32 @@ class Settings(BaseSettings):
     # --- Server ---
     host: str = "0.0.0.0"
     port: int = 8080
+    cors_origins: str = "*"  # Comma-separated origins; "*" allows all
+
+    # --- Environment ---
+    environment: Literal["dev", "production"] = "dev"
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def validate_production_config(self) -> list[str]:
+        """Validate that all required settings are present for production mode.
+
+        Returns a list of missing/invalid configuration warnings.
+        """
+        issues: list[str] = []
+        if not self.neo4j_password:
+            issues.append("NEO4J_PASSWORD is required in production")
+        if not self.knowledge_api_token:
+            issues.append("KNOWLEDGE_API_TOKEN is required in production")
+        if self.llm_provider == "dashscope" and not self.dashscope_api_key:
+            issues.append("DASHSCOPE_API_KEY is required when llm_provider=dashscope")
+        if self.cors_origins == "*":
+            issues.append("CORS_ORIGINS is set to '*' — restrict to specific origins in production")
+        return issues
 
 
 @lru_cache

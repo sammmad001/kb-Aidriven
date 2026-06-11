@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -21,9 +26,15 @@ async def verify_api_token(
     settings = get_settings()
     expected = settings.knowledge_api_token
 
-    # If no token is configured, skip auth (dev mode)
+    # SECURITY: If no token is configured, reject all requests.
+    # Never skip authentication — an empty token is a misconfiguration, not dev mode.
     if not expected:
-        return ""
+        logger.error("API token is not configured. Rejecting request.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API token not configured on server",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     if credentials is None:
         raise HTTPException(
@@ -32,7 +43,8 @@ async def verify_api_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if credentials.credentials != expected:
+    # SECURITY: Use timing-safe comparison to prevent timing attacks
+    if not hmac.compare_digest(credentials.credentials, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",

@@ -33,22 +33,21 @@ class GraphRetriever:
     # ------------------------------------------------------------------
 
     async def _factual_retrieve(self, understanding: QueryUnderstanding) -> RetrievalResult:
-        """Retrieve a single node's content."""
-        nodes = []
-        for entity_name in understanding.entities:
-            entity_id = entity_name.replace(" ", "_")
-            records = await self._db.execute_read(
-                """
-                MATCH (n) WHERE n.id = $id OR n.name = $name
-                RETURN n.id AS id, n.name AS name, n.content AS content,
-                       n.summary AS summary, n.tags AS tags
-                LIMIT 1
-                """,
-                {"id": entity_id, "name": entity_name},
-            )
-            for r in records:
-                nodes.append(dict(r))
+        """Retrieve nodes' content (batched — PERF-02 fix)."""
+        entity_ids = [e.replace(" ", "_") for e in understanding.entities]
+        entity_names = list(understanding.entities)
+        if not entity_ids:
+            return RetrievalResult(nodes=[])
 
+        records = await self._db.execute_read(
+            """
+            MATCH (n) WHERE n.id IN $ids OR n.name IN $names
+            RETURN n.id AS id, n.name AS name, n.content AS content,
+                   n.summary AS summary, n.tags AS tags
+            """,
+            {"ids": entity_ids, "names": entity_names},
+        )
+        nodes = [dict(r) for r in records]
         return RetrievalResult(nodes=nodes)
 
     # ------------------------------------------------------------------
@@ -56,37 +55,39 @@ class GraphRetriever:
     # ------------------------------------------------------------------
 
     async def _relational_retrieve(self, understanding: QueryUnderstanding) -> RetrievalResult:
-        """Retrieve nodes and their direct relationships."""
+        """Retrieve nodes and their direct relationships (batched — PERF-02 fix)."""
+        entity_ids = [e.replace(" ", "_") for e in understanding.entities]
+        entity_names = list(understanding.entities)
         all_nodes = []
         explicit_paths = []
 
-        for entity_name in understanding.entities:
-            entity_id = entity_name.replace(" ", "_")
+        if not entity_ids:
+            return RetrievalResult(nodes=[])
 
-            # Get node data
-            node_records = await self._db.execute_read(
-                "MATCH (n) WHERE n.id = $id OR n.name = $name "
-                "RETURN n.id AS id, n.name AS name, n.content AS content, n.summary AS summary",
-                {"id": entity_id, "name": entity_name},
-            )
-            all_nodes.extend(dict(r) for r in node_records)
+        # Batch node data
+        node_records = await self._db.execute_read(
+            "MATCH (n) WHERE n.id IN $ids OR n.name IN $names "
+            "RETURN n.id AS id, n.name AS name, n.content AS content, n.summary AS summary",
+            {"ids": entity_ids, "names": entity_names},
+        )
+        all_nodes.extend(dict(r) for r in node_records)
 
-            # Get relationships
-            rel_records = await self._db.execute_read(
-                """
-                MATCH (n)-[r]->(m) WHERE n.id = $id OR n.name = $name
-                RETURN n.name AS from_name,
-                       CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS rel_type,
-                       m.name AS to_name, m.summary AS to_summary, m.id AS to_id,
-                       r.confidence AS confidence
-                ORDER BY CASE WHEN r.confidence IS NOT NULL THEN r.confidence ELSE 1.0 END DESC
-                """,
-                {"id": entity_id, "name": entity_name},
-            )
-            for r in rel_records:
-                explicit_paths.append(dict(r))
-                all_nodes.append({"id": r.get("to_id", ""), "name": r.get("to_name", ""),
-                                  "summary": r.get("to_summary", "")})
+        # Batch relationships
+        rel_records = await self._db.execute_read(
+            """
+            MATCH (n)-[r]->(m) WHERE n.id IN $ids OR n.name IN $names
+            RETURN n.name AS from_name,
+                   CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS rel_type,
+                   m.name AS to_name, m.summary AS to_summary, m.id AS to_id,
+                   r.confidence AS confidence
+            ORDER BY CASE WHEN r.confidence IS NOT NULL THEN r.confidence ELSE 1.0 END DESC
+            """,
+            {"ids": entity_ids, "names": entity_names},
+        )
+        for r in rel_records:
+            explicit_paths.append(dict(r))
+            all_nodes.append({"id": r.get("to_id", ""), "name": r.get("to_name", ""),
+                              "summary": r.get("to_summary", "")})
 
         # Implicit relations
         implicit_rels = await self._get_implicit_relations(understanding.entities)
@@ -130,13 +131,13 @@ class GraphRetriever:
                 all_nodes.extend(r.get("path_nodes", []))
                 explicit_paths.extend(r.get("path_rels", []))
 
-        # Part 2: Individual node data
-        for entity_name in understanding.entities:
-            entity_id = entity_name.replace(" ", "_")
+        # Part 2: Individual node data (batched — PERF-02 fix)
+        entity_names = list(understanding.entities)
+        if entity_ids:
             records = await self._db.execute_read(
-                "MATCH (n) WHERE n.id = $id OR n.name = $name "
+                "MATCH (n) WHERE n.id IN $ids OR n.name IN $names "
                 "RETURN n.id AS id, n.name AS name, n.content AS content, n.summary AS summary",
-                {"id": entity_id, "name": entity_name},
+                {"ids": entity_ids, "names": entity_names},
             )
             all_nodes.extend(dict(r) for r in records)
 

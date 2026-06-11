@@ -29,6 +29,10 @@ class LLMClient(ABC):
             model: Optional model override. If None, uses the default model.
         """
 
+    @abstractmethod
+    async def close(self) -> None:
+        """Close underlying HTTP client resources."""
+
     async def chat_json(self, system: str, user: str, model: str | None = None) -> dict[str, Any]:
         """Send a chat request asking for JSON output, then parse it."""
         raw = await self.chat(system, user, json_mode=True, model=model)
@@ -90,6 +94,10 @@ class OllamaClient(LLMClient):
         data = resp.json()
         return data.get("message", {}).get("content", "")
 
+    async def close(self) -> None:
+        """Close the underlying httpx client."""
+        await self._client.aclose()
+
 
 class DashScopeClient(LLMClient):
     """DashScope (Alibaba Cloud / 百炼) LLM client using OpenAI-compatible API."""
@@ -126,6 +134,10 @@ class DashScopeClient(LLMClient):
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+    async def close(self) -> None:
+        """Close the underlying httpx client."""
+        await self._client.aclose()
 
 
 def get_llm_client(settings: Settings) -> LLMClient:

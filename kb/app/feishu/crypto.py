@@ -40,8 +40,10 @@ def verify_signature(
 def decrypt_message(encrypt_key: str, encrypted_data: str) -> str:
     """Decrypt Feishu encrypted message data using AES-256-CBC.
 
-    Key = SHA256(encrypt_key)[:32] (first 16 bytes as AES key)
-    IV = first 16 bytes of encrypted data (after base64 decode)
+    Key = SHA256(encrypt_key) full 32 bytes (AES-256).
+    IV = first 16 bytes of encrypted data (after base64 decode).
+
+    This matches the lark-oapi SDK's AESCipher implementation.
     """
     if not encrypt_key or not encrypted_data:
         return encrypted_data
@@ -50,17 +52,21 @@ def decrypt_message(encrypt_key: str, encrypted_data: str) -> str:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives import padding as sym_padding
 
-        # Derive AES key from encrypt_key
-        key = hashlib.sha256(encrypt_key.encode("utf-8")).digest()[:16]
+        # Derive AES-256 key from encrypt_key (full 32 bytes, NOT truncated)
+        key = hashlib.sha256(encrypt_key.encode("utf-8")).digest()
 
         # Base64 decode
         encrypted_bytes = base64.b64decode(encrypted_data)
+
+        if len(encrypted_bytes) < 32 or len(encrypted_bytes) % 16 != 0:
+            logger.error("Invalid ciphertext length: %d bytes", len(encrypted_bytes))
+            return encrypted_data
 
         # Extract IV (first 16 bytes) and ciphertext
         iv = encrypted_bytes[:16]
         ciphertext = encrypted_bytes[16:]
 
-        # Decrypt
+        # Decrypt with AES-256-CBC
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
         decryptor = cipher.decryptor()
         padded = decryptor.update(ciphertext) + decryptor.finalize()

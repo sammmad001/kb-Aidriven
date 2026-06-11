@@ -63,8 +63,15 @@ class IngestPipeline:
         await self._db.close()
         self._initialized = False
 
+    # Maximum age (seconds) for completed/failed tasks before cleanup
+    _TASK_TTL = 3600  # 1 hour
+    _TASK_MAX_COUNT = 1000  # Max tasks to keep in memory
+
     async def run(self, request: IngestRequest) -> IngestResult:
         """Execute the full 4-step ingest pipeline."""
+        # Cleanup stale tasks periodically (ERR-05 / ARCH-03 fix)
+        self._cleanup_stale_tasks()
+
         task_id = uuid4().hex
         result = IngestResult(task_id=task_id, status=TaskStatusEnum.PROCESSING)
         self._tasks[task_id] = TaskStatus(task_id=task_id, status=TaskStatusEnum.PROCESSING, progress="starting")
@@ -122,6 +129,7 @@ class IngestPipeline:
                 status=TaskStatusEnum.COMPLETED,
                 progress="completed",
                 result=result,
+                finished_at=time.time(),
             )
             total = sum(timings.values())
             logger.info(
@@ -143,6 +151,7 @@ class IngestPipeline:
                 status=TaskStatusEnum.FAILED,
                 progress="failed",
                 error=str(exc),
+                finished_at=time.time(),
             )
 
         return result
@@ -150,3 +159,25 @@ class IngestPipeline:
     def get_task_status(self, task_id: str) -> TaskStatus | None:
         """Get the status of a running or completed ingest task."""
         return self._tasks.get(task_id)
+
+    def _cleanup_stale_tasks(self) -> None:
+        """Remove completed/failed tasks older than TTL or if count exceeds max."""
+        now = time.time()
+        stale_ids = [
+            tid for tid, ts in self._tasks.items()
+            if ts.status in (TaskStatusEnum.COMPLETED, TaskStatusEnum.FAILED)
+            and ts.finished_at and (now - ts.finished_at) > self._TASK_TTL
+        ]
+        for tid in stale_ids:
+            del self._tasks[tid]
+        # Hard cap: evict oldest finished tasks if over limit
+        if len(self._tasks) > self._TASK_MAX_COUNT:
+            finished = sorted(
+                [(tid, ts) for tid, ts in self._tasks.items()
+                 if ts.status in (TaskStatusEnum.COMPLETED, TaskStatusEnum.FAILED)],
+                key=lambda x: x[1].finished_at or 0,
+            )
+            for tid, _ in finished[: len(finished) - self._TASK_MAX_COUNT]:
+                del self._tasks[tid]
+        if stale_ids:
+            logger.debug("Cleaned up %d stale tasks", len(stale_ids))

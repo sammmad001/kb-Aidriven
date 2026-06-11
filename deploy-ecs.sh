@@ -84,6 +84,12 @@ echo "===== [4/6] 部署应用代码 ====="
 APP_DIR="/opt/knowledge-base"
 mkdir -p "$APP_DIR"
 
+# 创建专用运行用户
+if ! id -u kbuser &>/dev/null; then
+    useradd -r -s /sbin/nologin kbuser
+    echo "用户 kbuser 已创建"
+fi
+
 # 创建应用文件
 cat > "$APP_DIR/app/__init__.py" << 'PYEOF'
 PYEOF
@@ -132,8 +138,17 @@ FEISHU_VERIFICATION_TOKEN=${FEISHU_VERIFICATION_TOKEN:?未设置 FEISHU_VERIFICA
 FEISHU_ENCRYPT_KEY=${FEISHU_ENCRYPT_KEY:?未设置 FEISHU_ENCRYPT_KEY}
 
 # Knowledge API
-KNOWLEDGE_API_TOKEN=${KNOWLEDGE_API_TOKEN:-dev-token}
+KNOWLEDGE_API_TOKEN=${KNOWLEDGE_API_TOKEN:?KNOWLEDGE_API_TOKEN must be set}
+
+# Environment
+ENVIRONMENT=production
+
+# CORS (restrict to your frontend domain)
+CORS_ORIGINS=${CORS_ORIGINS:-*}
 ENVEOF
+
+# 设置目录权限
+chown -R kbuser:kbuser "$APP_DIR"
 
 # 创建 systemd 服务
 cat > /etc/systemd/system/knowledge-base.service << 'SVCEOF'
@@ -143,12 +158,13 @@ After=network.target neo4j.service
 
 [Service]
 Type=simple
-User=root
+User=kbuser
+Group=kbuser
 WorkingDirectory=/opt/knowledge-base
 ExecStart=/opt/knowledge-base/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
 Restart=always
 RestartSec=5
-Environment=JAVA_HOME=/opt/tools/zulu21.40.17-ca-jdk21.0.6-linux_x64
+Environment=JAVA_HOME=/opt/tools/jdk
 
 [Install]
 WantedBy=multi-user.target

@@ -45,19 +45,26 @@ class QueryPipeline:
         if not self._initialized:
             await self.initialize()
 
-        # Step 1: Query Understanding
-        understanding = await self._understander.understand(request.question)
-        logger.info("Query understood: type=%s, depth=%s, entities=%s",
-                    understanding.query_type, understanding.depth, understanding.entities)
+        try:
+            # Step 1: Query Understanding
+            understanding = await self._understander.understand(request.question)
+            logger.info("Query understood: type=%s, depth=%s, entities=%s",
+                        understanding.query_type, understanding.depth, understanding.entities)
 
-        # Step 2: Graph Retrieval
-        retrieval = await self._retriever.retrieve(understanding)
+            # Step 2: Graph Retrieval
+            retrieval = await self._retriever.retrieve(understanding)
 
-        # Step 3: LLM Answer Generation
-        result = await self._generator.generate(
-            question=request.question,
-            retrieval=retrieval,
-            query_type=understanding.query_type,
-        )
+            # Step 3: LLM Answer Generation
+            result = await self._generator.generate(
+                question=request.question,
+                retrieval=retrieval,
+                query_type=understanding.query_type,
+            )
 
-        return result
+            return result
+        except Exception as exc:
+            logger.exception("Query pipeline failed: %s", exc)
+            return QueryResult(
+                answer=f"查询失败: {exc}",
+                confidence=0.0,
+            )

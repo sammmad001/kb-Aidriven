@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, HTTPException, Query
+import logging
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.api.deps import verify_api_token
 from app.models import (
     GraphStats,
     KnowledgeChainReport,
@@ -15,6 +18,8 @@ from app.models import (
     MultiHopPath,
     ClusterBrief,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["graph"])
 
@@ -28,7 +33,7 @@ def set_db(db, lint_checker=None) -> None:
     _lint_checker = lint_checker
 
 
-@router.get("/graph/stats", response_model=GraphStats)
+@router.get("/graph/stats", response_model=GraphStats, dependencies=[Depends(verify_api_token)])
 async def get_graph_stats() -> GraphStats:
     """Get knowledge graph statistics."""
     if _db is None:
@@ -61,15 +66,15 @@ async def get_graph_stats() -> GraphStats:
                 concept_count=r.get("concept_count", 0),
                 cluster_count=r.get("cluster_count", 0),
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to fetch graph stats: %s", exc)
 
     return GraphStats()
 
 
-@router.get("/graph/data")
-async def get_graph_data() -> dict:
-    """Get full graph data in vis-network format for visualization."""
+@router.get("/graph/data", dependencies=[Depends(verify_api_token)])
+async def get_graph_data(limit: int = Query(500, le=2000, description="Max nodes to return")) -> dict:
+    """Get graph data in vis-network format for visualization."""
     if _db is None:
         return {"nodes": [], "edges": []}
 
@@ -87,7 +92,10 @@ async def get_graph_data() -> dict:
                  WHEN n:Concept THEN 'Concept'
                  ELSE 'Entity'
                END AS node_type
-        """
+        ORDER BY n.page_rank DESC
+        LIMIT $limit
+        """,
+        {"limit": limit},
     )
     for r in node_records:
         nodes.append({
@@ -99,35 +107,38 @@ async def get_graph_data() -> dict:
             "type": r.get("node_type", "Entity"),
         })
 
-    # Fetch edges (with implicit_type for coloring)
-    edge_records = await _db.execute_read(
-        """
-        MATCH (a)-[r]->(b)
-        WHERE (a:Entity OR a:Concept OR a:Comparison) AND (b:Entity OR b:Concept OR b:Comparison)
-        RETURN a.id AS from, b.id AS to,
-               CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS label,
-               r.confidence AS confidence,
-               CASE WHEN type(r) = 'IMPLICIT' THEN true ELSE false END AS dashes,
-               r.implicit_type AS implicit_type
-        """
-    )
-    for r in edge_records:
-        edge = {
-            "from": r["from"],
-            "to": r["to"],
-            "label": r.get("label", ""),
-            "dashes": r.get("dashes", False),
-        }
-        if r.get("implicit_type"):
-            edge["implicit_type"] = r["implicit_type"]
-        if r.get("confidence"):
-            edge["label"] += f" ({r['confidence']:.0%})"
-        edges.append(edge)
+    # Fetch edges between returned nodes only (bounded)
+    node_ids = [n["id"] for n in nodes]
+    if node_ids:
+        edge_records = await _db.execute_read(
+            """
+            MATCH (a)-[r]->(b)
+            WHERE a.id IN $node_ids AND b.id IN $node_ids
+            RETURN a.id AS from, b.id AS to,
+                   CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS label,
+                   r.confidence AS confidence,
+                   CASE WHEN type(r) = 'IMPLICIT' THEN true ELSE false END AS dashes,
+                   r.implicit_type AS implicit_type
+            """,
+            {"node_ids": node_ids},
+        )
+        for r in edge_records:
+            edge = {
+                "from": r["from"],
+                "to": r["to"],
+                "label": r.get("label", ""),
+                "dashes": r.get("dashes", False),
+            }
+            if r.get("implicit_type"):
+                edge["implicit_type"] = r["implicit_type"]
+            if r.get("confidence"):
+                edge["label"] += f" ({r['confidence']:.0%})"
+            edges.append(edge)
 
     return {"nodes": nodes, "edges": edges}
 
 
-@router.get("/graph/neighbors/{entity_id}")
+@router.get("/graph/neighbors/{entity_id}", dependencies=[Depends(verify_api_token)])
 async def get_neighbors(entity_id: str, depth: int = 1) -> dict:
     """Get N-hop neighborhood of an entity."""
     if _db is None:
@@ -173,7 +184,7 @@ async def get_neighbors(entity_id: str, depth: int = 1) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-@router.get("/graph/path")
+@router.get("/graph/path", dependencies=[Depends(verify_api_token)])
 async def get_path(from_id: str, to_id: str) -> dict:
     """Find shortest path between two entities."""
     if _db is None:
@@ -199,7 +210,7 @@ async def get_path(from_id: str, to_id: str) -> dict:
     return {"nodes": [], "edges": []}
 
 
-@router.post("/lint", response_model=LintReport)
+@router.post("/lint", response_model=LintReport, dependencies=[Depends(verify_api_token)])
 async def run_lint() -> LintReport:
     """Execute quality check on the knowledge graph."""
     if _lint_checker is None:
@@ -212,18 +223,17 @@ async def run_lint() -> LintReport:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/graph/search")
+@router.get("/graph/search", dependencies=[Depends(verify_api_token)])
 async def search_entities(q: str = Query(..., min_length=1)) -> dict:
     """Search entities by keyword (name or summary)."""
     if _db is None:
         return {"results": []}
 
-    safe_q = re.escape(q)
-    pattern = f"(?i).*{safe_q}.*"
     records = await _db.execute_read(
         """
-        MATCH (n) WHERE n:Entity OR n:Concept OR n:Comparison
-        WHERE n.name =~ $pattern OR n.summary =~ $pattern
+        MATCH (n)
+        WHERE (n:Entity OR n:Concept OR n:Comparison)
+          AND (n.name CONTAINS $kw OR n.summary CONTAINS $kw)
         RETURN n.id AS id, n.name AS name, n.summary AS summary,
                n.cluster_id AS cluster_id, n.page_rank AS page_rank,
                CASE
@@ -234,7 +244,7 @@ async def search_entities(q: str = Query(..., min_length=1)) -> dict:
         ORDER BY n.page_rank DESC
         LIMIT 20
         """,
-        {"pattern": pattern},
+        {"kw": q},
     )
     results = []
     for r in records:
@@ -249,7 +259,7 @@ async def search_entities(q: str = Query(..., min_length=1)) -> dict:
     return {"results": results}
 
 
-@router.get("/graph/node/{node_id}", response_model=NodeDetail)
+@router.get("/graph/node/{node_id}", response_model=NodeDetail, dependencies=[Depends(verify_api_token)])
 async def get_node_detail(node_id: str) -> NodeDetail:
     """Get full detail of a single node."""
     if _db is None:
@@ -343,7 +353,7 @@ async def get_node_detail(node_id: str) -> NodeDetail:
     )
 
 
-@router.get("/graph/node-report/{node_id}", response_model=KnowledgeChainReport)
+@router.get("/graph/node-report/{node_id}", response_model=KnowledgeChainReport, dependencies=[Depends(verify_api_token)])
 async def get_node_report(node_id: str) -> KnowledgeChainReport:
     """Generate a complete knowledge chain report for a node."""
     if _db is None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.api.deps import verify_api_token
 from app.models import IngestRequest
@@ -22,17 +22,13 @@ def set_pipeline(pipeline) -> None:
 async def create_ingest(request: IngestRequest, bg: BackgroundTasks) -> dict:
     """Submit a knowledge ingestion task (async).
 
-    Returns immediately with task_id. Processing happens in background.
+    Returns immediately with status. Processing happens in background.
     """
     if _pipeline is None:
-        return {"error": "Pipeline not initialized"}
-
-    task_id = None
+        raise HTTPException(status_code=503, detail="Pipeline not initialized")
 
     async def _run():
-        nonlocal task_id
-        result = await _pipeline.run(request)
-        task_id = result.task_id
+        await _pipeline.run(request)
 
     bg.add_task(_run)
     return {"status": "queued", "message": "Ingest task submitted"}

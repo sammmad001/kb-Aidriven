@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import verify_api_token
 from app.models import QueryRequest, QueryResult
@@ -25,9 +25,6 @@ async def create_query(request: QueryRequest) -> QueryResult:
     For higher depths, may take 1-5s.
     """
     if _query_pipeline is None:
-        return QueryResult(
-            answer="Query pipeline not initialized",
-            confidence=0.0,
-        )
+        raise HTTPException(status_code=503, detail="Query pipeline not initialized")
 
     return await _query_pipeline.run(request)
