@@ -74,12 +74,14 @@ async def lifespan(app: FastAPI):
 
     # Validate production configuration
     if settings.environment == "production":
-        issues = settings.validate_production_config()
-        if issues:
-            for issue in issues:
-                logger.error("Production config issue: %s", issue)
+        errors, warnings = settings.validate_production_config()
+        for w in warnings:
+            logger.warning("Production config warning: %s", w)
+        if errors:
+            for e in errors:
+                logger.error("Production config error: %s", e)
             raise RuntimeError(
-                f"Production config validation failed: {'; '.join(issues)}"
+                f"Production config validation failed: {'; '.join(errors)}"
             )
         logger.info("Production config validation passed")
     else:

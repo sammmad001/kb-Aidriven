@@ -67,21 +67,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    def validate_production_config(self) -> list[str]:
+    def validate_production_config(self) -> tuple[list[str], list[str]]:
         """Validate that all required settings are present for production mode.
 
-        Returns a list of missing/invalid configuration warnings.
+        Returns (errors, warnings). Errors block startup; warnings are logged.
         """
-        issues: list[str] = []
+        errors: list[str] = []
+        warnings: list[str] = []
         if not self.neo4j_password:
-            issues.append("NEO4J_PASSWORD is required in production")
+            errors.append("NEO4J_PASSWORD is required in production")
         if not self.knowledge_api_token:
-            issues.append("KNOWLEDGE_API_TOKEN is required in production")
+            errors.append("KNOWLEDGE_API_TOKEN is required in production")
         if self.llm_provider == "dashscope" and not self.dashscope_api_key:
-            issues.append("DASHSCOPE_API_KEY is required when llm_provider=dashscope")
+            errors.append("DASHSCOPE_API_KEY is required when llm_provider=dashscope")
         if self.cors_origins == "*":
-            issues.append("CORS_ORIGINS is set to '*' — restrict to specific origins in production")
-        return issues
+            warnings.append("CORS_ORIGINS is set to '*' — restrict to specific origins in production")
+        return errors, warnings
 
 
 @lru_cache
