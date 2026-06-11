@@ -63,6 +63,9 @@ class MockLLMClient(LLMClient):
         # Default answer generation
         return self._responses.get("answer", self._default_answer)
 
+    async def close(self) -> None:
+        pass
+
 
 # ======================================================================
 # Mock Neo4j Database
@@ -124,6 +127,15 @@ class MockNeo4jDatabase:
             return []  # No implicit rels in mock
         if "m)-[r]->(n)" in query:
             return []  # No incoming rels in mock
+        # Handle batch entity existence check (IN $ids OR n.name IN $names)
+        if "IN $ids" in query or "IN $names" in query:
+            ids = params.get("ids", [])
+            names = params.get("names", [])
+            results = []
+            for node in self._nodes.values():
+                if node.get("id") in ids or node.get("name") in names:
+                    results.append({"id": node["id"], "name": node.get("name", "")})
+            return results
         if "n.id = $id" in query or "n.name = $name" in query:
             node_id = params.get("id", params.get("name", ""))
             if node_id in self._nodes:

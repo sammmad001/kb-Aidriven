@@ -403,7 +403,14 @@ async def _run_pipeline_and_send(
 
     except Exception as exc:
         logger.exception("Ingest pipeline failed for task %s", task_id)
-        await send_error(message_id, f"任务 `{task_id}` 处理失败: {exc}")
+        # Friendly error for Pydantic validation errors (e.g. file too large)
+        err_msg = str(exc)
+        if "string_too_long" in err_msg or "String should have at most" in err_msg:
+            err_msg = "文件过大，超过了系统处理上限（最大 20MB）。请压缩后再试。"
+        elif "PDF 提取" in err_msg:
+            # Keep PDF extraction errors as-is, they're already user-friendly
+            pass
+        await send_error(message_id, err_msg)
 
 
 # ======================================================================

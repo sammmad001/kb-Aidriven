@@ -1,0 +1,40 @@
+#!/bin/bash
+# pre-commit hook: 快速检查（每次 git commit 自动执行）
+# 仅检查暂存的 Python 文件编译 + pytest
+set -e
+
+echo "🔍 [pre-commit] 自动验证中..."
+
+# 1. 检查暂存的 .py 文件是否有语法错误
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+if [ -n "$STAGED_PY" ]; then
+    echo "  检查 Python 编译..."
+    ERRORS=0
+    for f in $STAGED_PY; do
+        if [ -f "$f" ] && ! python3 -m py_compile "$f" 2>/dev/null; then
+            echo "  ✗ 编译失败: $f"
+            ERRORS=$((ERRORS + 1))
+        fi
+    done
+    if [ $ERRORS -gt 0 ]; then
+        echo "❌ Python 编译检查失败，commit 已阻止"
+        exit 1
+    fi
+    echo "  ✓ Python 编译通过"
+fi
+
+# 2. 运行 pytest（仅后端有变更时）
+STAGED_KB=$(git diff --cached --name-only | grep '^kb/' || true)
+if [ -n "$STAGED_KB" ]; then
+    echo "  运行 pytest..."
+    cd kb && python3 -m pytest tests/ -x -q --tb=short 2>&1
+    EXIT_CODE=$?
+    cd ..
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "❌ pytest 失败，commit 已阻止"
+        exit 1
+    fi
+    echo "  ✓ pytest 通过"
+fi
+
+echo "✅ pre-commit 检查全部通过"

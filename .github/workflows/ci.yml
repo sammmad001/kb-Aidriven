@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          cd kb
+          pip install -r requirements.txt
+      - name: Compile check
+        run: |
+          cd kb
+          find app -name "*.py" -exec python3 -m py_compile {} \;
+      - name: Run pytest
+        run: |
+          cd kb
+          python3 -m pytest tests/ -x -q --tb=short
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: cd kb-web && npm ci
+      - name: TypeScript check
+        run: cd kb-web && npx tsc -b --noEmit
+      - name: Build
+        run: cd kb-web && npm run build

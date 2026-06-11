@@ -79,8 +79,12 @@ class IngestOptions(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    """API request body for knowledge ingestion."""
-    source: str = Field(..., max_length=100_000)
+    """API request body for knowledge ingestion.
+
+    source max_length accommodates base64-encoded files up to ~20MB
+    (base64 inflates by ~33%, so 20MB → ~28M chars; rounded to 30M).
+    """
+    source: str = Field(..., max_length=30_000_000)
     options: IngestOptions = Field(default_factory=IngestOptions)
 
 
