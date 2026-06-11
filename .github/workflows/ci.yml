@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -42,3 +42,79 @@ jobs:
         run: cd kb-web && npx tsc -b --noEmit
       - name: Build
         run: cd kb-web && npm run build
+
+  deploy:
+    name: Deploy to ECS
+    needs: [backend-test, frontend-build]
+    runs-on: ubuntu-latest
+    # 仅在 push 到 main 时部署，PR 不触发部署
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ECS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.ECS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Backup on ECS
+        run: |
+          ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
+            "cd /opt/knowledge-base && ./backup.sh"
+
+      - name: Upload backend code
+        run: |
+          rsync -avz --delete \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.env' \
+            --exclude='venv/' \
+            --exclude='raw/sources/*' \
+            --exclude='wiki/*' \
+            -e "ssh -o ConnectTimeout=10" \
+            kb/ ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/kb/
+
+      - name: Upload frontend build
+        run: |
+          rsync -avz --delete \
+            -e "ssh -o ConnectTimeout=10" \
+            kb-web/dist/ ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/kb-web/dist/
+
+      - name: Install dependencies (if changed)
+        run: |
+          ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
+            "cd /opt/knowledge-base/kb && pip install -r requirements.txt -q"
+
+      - name: Restart service
+        run: |
+          ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
+            "systemctl restart knowledge-base"
+
+      - name: Health check
+        run: |
+          echo "等待服务启动..."
+          sleep 5
+          for i in {1..5}; do
+            if curl -sf http://${{ secrets.ECS_HOST }}:8080/health | grep -q ok; then
+              echo "✅ 健康检查通过"
+              exit 0
+            fi
+            echo "  尝试 $i/5..."
+            sleep 3
+          done
+          echo "❌ 健康检查失败"
+          ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
+            "journalctl -u knowledge-base --no-pager -n 20"
+          exit 1
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "## 🚀 部署成功" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: main" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECS**: ${{ secrets.ECS_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time**: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
