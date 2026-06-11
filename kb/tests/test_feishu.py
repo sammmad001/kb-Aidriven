@@ -244,7 +244,8 @@ class TestEntityFiltering:
         raw_result = {"entities": [
             {"name": f"Entity{i}", "importance": 20 - i} for i in range(20)
         ]}
-        filtered = analyzer._filter_entities(entities, raw_result)
+        # V1.1: dynamic cap based on content length; 500 chars → cap 10
+        filtered = analyzer._filter_entities(entities, raw_result, content_length=500)
         assert len(filtered) == 10
         # Top importance should come first
         assert filtered[0].name == "Entity0"

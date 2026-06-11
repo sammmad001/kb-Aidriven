@@ -19,6 +19,7 @@ from app.feishu.handlers import init_handlers
 from app.feishu.ws_client import FeishuWsClient
 from app.ingest.pipeline import IngestPipeline
 from app.lint.checker import LintChecker
+from app.maintenance.implicit_reviewer import ImplicitRelationReviewer
 from app.query.pipeline import QueryPipeline
 from app.services.ingest_tracker import IngestTracker
 from app.services.scheduler import IngestRetryScheduler
@@ -63,13 +64,14 @@ _feishu_client: FeishuClient | None = None
 _feishu_ws_client: FeishuWsClient | None = None
 _ingest_tracker: IngestTracker | None = None
 _ingest_retry_scheduler: IngestRetryScheduler | None = None
+_implicit_reviewer: ImplicitRelationReviewer | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
     global _ingest_pipeline, _query_pipeline, _feishu_client, _feishu_ws_client
-    global _ingest_tracker, _ingest_retry_scheduler
+    global _ingest_tracker, _ingest_retry_scheduler, _implicit_reviewer
     settings = get_settings()
 
     # Validate production configuration
@@ -125,6 +127,15 @@ async def lifespan(app: FastAPI):
     if settings.ingest_auto_retry:
         _ingest_retry_scheduler.start()
 
+    # V1.1: Initialize ImplicitRelationReviewer for periodic low-confidence edge re-evaluation
+    _implicit_reviewer = ImplicitRelationReviewer(
+        db=_ingest_pipeline._db,
+        llm=_ingest_pipeline._llm,
+        reasoning_model=settings.dashscope_model_reasoning,
+        interval_hours=24,
+    )
+    _implicit_reviewer.start()
+
     # Wire up API routes
     ingest.set_pipeline(_ingest_pipeline)
     query.set_pipeline(_query_pipeline)
@@ -138,6 +149,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    if _implicit_reviewer:
+        _implicit_reviewer.shutdown()
     if _ingest_retry_scheduler:
         _ingest_retry_scheduler.shutdown()
     if _feishu_ws_client:
@@ -253,6 +266,11 @@ async def health() -> dict:
         components["ingest_scheduler"] = "ok"
     else:
         components["ingest_scheduler"] = "not_configured"
+
+    if _implicit_reviewer and _implicit_reviewer._running:
+        components["implicit_reviewer"] = "ok"
+    else:
+        components["implicit_reviewer"] = "not_configured"
 
     status = "ok" if all_ok else "degraded"
 

@@ -172,6 +172,43 @@ class MockNeo4jDatabase:
             {"kw": keyword, "limit": limit},
         )
 
+    # V1.1: Three-tier matching methods
+    async def search_by_alias(self, alias: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Mock alias search — checks if alias appears in any node's name."""
+        results = []
+        for n in self._nodes.values():
+            if alias.lower() in n.get("name", "").lower() or alias.lower() in n.get("id", "").lower():
+                results.append({
+                    "id": n["id"], "name": n.get("name", ""),
+                    "summary": n.get("summary", ""), "aliases": n.get("aliases", []),
+                    "labels": [n.get("label", "Entity")], "score": 1.0,
+                })
+        return results[:limit]
+
+    async def match_entity_tiered(
+        self, name: str, aliases: list[str],
+    ) -> dict[str, Any]:
+        """V1.1: Mock three-tier entity matching."""
+        # Tier 1: Exact match
+        node_id = name.replace(" ", "_")
+        if node_id in self._nodes:
+            return {"node_id": node_id, "matched_by": "exact", "match_confidence": 1.0}
+        # Check by name
+        for n in self._nodes.values():
+            if n.get("name") == name:
+                return {"node_id": n["id"], "matched_by": "exact", "match_confidence": 1.0}
+        # Tier 2: Alias match
+        for alias in aliases:
+            alias_results = await self.search_by_alias(alias, limit=1)
+            if alias_results:
+                return {"node_id": alias_results[0]["id"], "matched_by": "alias", "match_confidence": 0.9}
+        # Tier 3: Semantic (CONTAINS)
+        for n in self._nodes.values():
+            nname = n.get("name", "")
+            if name in nname or nname in name:
+                return {"node_id": n["id"], "matched_by": "semantic", "match_confidence": 0.6}
+        return {"node_id": None, "matched_by": "new", "match_confidence": 0.0}
+
 
 # ======================================================================
 # Fixtures

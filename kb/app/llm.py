@@ -1,7 +1,11 @@
-"""LLM abstraction layer supporting Ollama (local) and DashScope (API)."""
+"""LLM abstraction layer supporting Ollama (local) and DashScope (API).
+
+V1.1: Added ResilientLLMClient with model fallback chain and exponential backoff.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -140,10 +144,72 @@ class DashScopeClient(LLMClient):
         await self._client.aclose()
 
 
+class ResilientLLMClient(LLMClient):
+    """V1.1: LLM client wrapper with fallback chain and exponential backoff.
+
+    Wraps an underlying LLMClient (Ollama or DashScope) and adds:
+    - Primary model with configurable fallback tiers
+    - Exponential backoff on transient failures
+    - Automatic retry on timeout/5xx errors
+    """
+
+    # Fallback tiers: (model_name, max_retries, base_backoff_seconds)
+    _DASHSCOPE_FALLBACKS: list[tuple[str, int, float]] = [
+        ("qwen3.5-plus", 1, 1.0),
+        ("qwen-flash", 1, 2.0),
+        ("qwen-turbo", 1, 4.0),
+    ]
+    _OLLAMA_FALLBACK: str = ""  # Ollama has only one model typically
+
+    def __init__(self, inner: LLMClient, provider: str) -> None:
+        self._inner = inner
+        self._provider = provider
+
+    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None) -> str:
+        """Chat with fallback: try primary model, then fallback tiers on failure."""
+        effective_model = model
+        last_error: Exception | None = None
+
+        # Determine fallback tiers based on provider
+        if self._provider == "dashscope" and model:
+            tiers = [(model, 1, 1.0)] + [
+                (m, r, b) for m, r, b in self._DASHSCOPE_FALLBACKS if m != model
+            ]
+        else:
+            # No fallback for Ollama or when model is not specified
+            return await self._inner.chat(system, user, json_mode, effective_model)
+
+        for tier_model, max_retries, base_backoff in tiers:
+            for attempt in range(max_retries + 1):
+                try:
+                    return await self._inner.chat(system, user, json_mode, tier_model)
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                    last_error = exc
+                    logger.warning(
+                        "LLM fallback: model=%s attempt=%d/%d failed: %s",
+                        tier_model, attempt + 1, max_retries + 1, exc,
+                    )
+                    if attempt < max_retries:
+                        backoff = base_backoff * (2 ** attempt)
+                        await asyncio.sleep(backoff)
+                    continue
+
+        raise RuntimeError(f"All model tiers exhausted: {last_error}") from last_error
+
+    async def close(self) -> None:
+        """Close the underlying client."""
+        await self._inner.close()
+
+
 def get_llm_client(settings: Settings) -> LLMClient:
-    """Factory: create the appropriate LLM client based on settings."""
+    """Factory: create the appropriate LLM client based on settings.
+
+    V1.1: DashScope clients are automatically wrapped with ResilientLLMClient
+    for fallback chain support on transient failures.
+    """
     if settings.llm_provider == "dashscope":
         if not settings.dashscope_api_key:
             raise ValueError("DASHSCOPE_API_KEY is required when llm_provider=dashscope")
-        return DashScopeClient(settings.dashscope_api_key, settings.dashscope_model)
+        inner = DashScopeClient(settings.dashscope_api_key, settings.dashscope_model)
+        return ResilientLLMClient(inner, "dashscope")
     return OllamaClient(settings.ollama_base_url, settings.ollama_model)

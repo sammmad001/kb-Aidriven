@@ -1,0 +1,58 @@
+## Few-shot 示例
+
+### 示例 1 — depends_on（依赖关系）
+输入：
+【新节点】
+【Kubernetes】: 容器编排平台，管理容器化应用的部署、扩展和运维
+【2-hop 图谱路径】
+  Kubernetes -[uses]-> Docker -[uses]-> containerd
+  Kubernetes -[related_to]-> 容器编排
+
+输出：
+[{"source":"Kubernetes","target":"etcd","type":"depends_on","confidence":0.85,"evidence":"Kubernetes 的集群状态存储完全依赖 etcd，所有集群数据都存储在 etcd 中"}]
+
+### 示例 2 — trade_off（对立关系）
+输入：
+【新节点】
+【微服务架构】: 将应用拆分为多个独立服务，每个服务独立部署和扩展
+【2-hop 图谱路径】
+  微服务架构 -[contrasts_with]-> 单体架构
+  微服务架构 -[uses]-> Docker
+
+输出：
+[{"source":"微服务架构","target":"单体架构","type":"trade_off","confidence":0.90,"evidence":"微服务提高灵活性和独立部署能力，但增加运维复杂度和网络延迟——与单体架构在 灵活性 vs 复杂度 维度上存在取舍"}]
+
+### 示例 3 — evolves_to（演化关系）
+输入：
+【新节点】
+【GraphRAG】: 基于知识图谱的检索增强生成方案，通过图结构改善 RAG 的多跳推理能力
+【2-hop 图谱路径】
+  RAG -[uses]-> 向量数据库
+  GraphRAG -[uses]-> 知识图谱
+  RAG -[related_to]-> 知识图谱
+
+输出：
+[{"source":"RAG","target":"GraphRAG","type":"evolves_to","confidence":0.88,"evidence":"GraphRAG 在 RAG 的向量检索基础上引入图结构来增强多跳推理，是 RAG 技术的演进方向"}]
+
+### 示例 4 — bridges（桥接关系）
+输入：
+【新节点】
+【成本控制】: 管理项目或系统的资源消耗与预算
+【2-hop 图谱路径】
+  成本控制 -[related_to]-> 技术选型
+  成本控制 -[related_to]-> 项目管理
+  技术选型 -[depends_on]-> 性能优化
+
+输出：
+[{"source":"成本控制","target":"技术选型","type":"bridges","confidence":0.78,"evidence":"成本控制同时连接了 项目管理 和 技术选型 两个不同领域，是跨域决策的关键因素"}]
+
+### 示例 5 — solves（解决关系）
+输入：
+【新节点】
+【知识图谱】: 以图结构存储知识的数据库技术，支持复杂关系查询和推理
+【2-hop 图谱路径】
+  RAG -[has_problem]-> 多跳推理瓶颈
+  知识图谱 -[enables]-> 图推理
+
+输出：
+[{"source":"知识图谱","target":"RAG","type":"solves","confidence":0.85,"evidence":"知识图谱的图结构天然支持多跳关系遍历，解决了 RAG 在多次检索跳转时的上下文丢失问题"}]

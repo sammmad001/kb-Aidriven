@@ -30,13 +30,34 @@ class ConflictType(str, Enum):
     TEMPORAL_UPDATE = "temporal_update"
 
 
+class EdgeLabel(str, Enum):
+    """V1.1: Extended edge labels for explicit relations."""
+    # Original
+    EXPLICIT = "EXPLICIT"
+    IMPLICIT = "IMPLICIT"
+    BELONGS_TO = "BELONGS_TO"
+    DERIVED_FROM = "DERIVED_FROM"
+    # New: 5 semantic edge types
+    CAUSES = "CAUSES"
+    PRECEDES = "PRECEDES"
+    IS_A = "IS_A"
+    CONTRADICTS = "CONTRADICTS"
+    ANALOGOUS_TO = "ANALOGOUS_TO"
+
+
 class ImplicitRelationType(str, Enum):
-    """Five implicit relation types."""
+    """V1.1: Extended from 5 to 9 implicit relation types."""
+    # Original 5
     DEPENDS_ON = "depends_on"
     TRADE_OFF = "trade_off"
     BRIDGES = "bridges"
     EVOLVES_TO = "evolves_to"
     SOLVES = "solves"
+    # New 4
+    PRECEDES = "precedes"        # 时序先后关系
+    CAUSES = "causes"            # 因果关系
+    CONTRADICTS = "contradicts"   # 矛盾/对立观点
+    ANALOGOUS_TO = "analogous_to" # 类比关系
 
 
 class QueryType(str, Enum):
@@ -99,10 +120,20 @@ class PreprocessResult(BaseModel):
 
 
 class EntityInfo(BaseModel):
-    """Information about an extracted entity."""
+    """V1.1: Information about an extracted entity with alias support and existence cross-validation."""
     name: str
     exists: bool = False
     node_id: Optional[str] = None
+    # V1.1: Entity enrichment fields
+    aliases: list[str] = Field(default_factory=list)
+    subtype: str = ""
+    domain: str = ""
+    definition: str = ""
+    importance: int = Field(default=5, ge=1, le=10)
+    # V1.1: Existence cross-validation fields
+    exists_guess: bool = False  # LLM's pre-judgment of entity existence
+    exists_reason: str = ""     # LLM's reasoning for existence guess
+    matched_by: str = ""        # How entity was matched: "exact"|"alias"|"semantic"|"new"
 
 
 class RelationInfo(BaseModel):
@@ -125,6 +156,8 @@ class ConflictInfo(BaseModel):
 class AnalysisReport(BaseModel):
     """Output of Step 2: analysis & classification."""
     type: MaterialType
+    type_confidence: float = Field(default=0.5, ge=0.0, le=1.0)  # V1.1: 分类置信度
+    classification_reason: str = ""  # V1.1: LLM 分类判定理由
     entities: list[EntityInfo] = Field(default_factory=list)
     relations: list[RelationInfo] = Field(default_factory=list)
     conflicts: list[ConflictInfo] = Field(default_factory=list)

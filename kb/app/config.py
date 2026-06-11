@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     dashscope_model: str = "qwen3.5-plus"  # 默认模型（兼容旧配置）
 
-    # DashScope 分环节模型分配（推荐方案：性能/成本最优平衡）
-    dashscope_model_analyze: str = "qwen-turbo"     # Step 2 分析分类
-    dashscope_model_compile: str = "qwen3.5-plus"   # Step 3b 页面编写
-    dashscope_model_reasoning: str = "qwen-flash"   # Step 3d 隐式推理
-    dashscope_model_query: str = "qwen3.5-plus"     # Query 回答生成
+    # DashScope 分环节模型分配（V1.1优化：隐式推理从 flash 升级到 plus）
+    dashscope_model_analyze: str = "qwen-turbo"     # Step 2 分析分类（轻量任务）
+    dashscope_model_compile: str = "qwen3.5-plus"   # Step 3b 页面编写（质量关键）
+    dashscope_model_reasoning: str = "qwen3.5-plus"  # Step 3c 隐式推理（P0升级：flash→plus）
+    dashscope_model_query: str = "qwen3.5-plus"     # Query 回答生成（用户面向）
 
     # --- Feishu ---
     feishu_app_id: str = ""

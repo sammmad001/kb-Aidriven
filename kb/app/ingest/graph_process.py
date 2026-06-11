@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from app.database import Neo4jDatabase
+from app.ingest.fewshot import load_fewshot
 from app.llm import LLMClient
 from app.models import (
     AnalysisReport,
@@ -22,31 +23,108 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
-# LLM prompt for node content writing
+# LLM prompt for node content writing (V1.1: enriched with few-shot guidance)
 CONTENT_SYSTEM_PROMPT = """你是一个知识库编译器。请根据提供的信息编写完整的知识页面内容。
+
 输出纯 Markdown 格式，包含：
 1. 一句话定义（> 引用格式）
-2. 概述（2-5 段）
-3. 关键事实（要点列表）
+2. 概述（2-5 段，基于素材内容展开，不编造信息）
+3. 关键事实（要点列表，每项附带来源引用）
 4. 与其他知识的关系（使用 [[实体名]] 格式的 wikilinks）
+5. 参考来源（如果有）
 
-注意：内容必须完全基于素材，不编造信息。"""
+编写原则：
+- 内容必须完全基于素材，不编造信息
+- 关键数据点保留原始出处
+- wikilinks 使用规范名称（如 [[Kubernetes]] 而非 [[K8s]]）
+- 与其他知识的关联段落应引用分析报告中的关系信息"""
 
-# LLM prompt for implicit relation discovery
-IMPLICIT_SYSTEM_PROMPT = """你正在分析一个个人知识库的知识图谱。请发现以下类型的隐式关系：
+# LLM prompt for implicit relation discovery (V1.1: reasoning strategy + confidence calibration + anti-patterns)
+IMPLICIT_SYSTEM_PROMPT = """你是一个知识图谱推理引擎。基于给定的新节点及其图谱上下文，发现隐含的语义关系。
 
-1. 依赖关系（depends_on）：A 的核心能力依赖 B
-2. 对立关系（trade_off）：A 和 B 存在取舍或矛盾
-3. 桥接关系（bridges）：A 连接不同知识领域
-4. 演化关系（evolves_to）：A 是 B 的前身/替代/演进版本
-5. 解决关系（solves）：A 解决了 B 的某个问题
+## 推理策略（按顺序执行）
 
-对每个发现的关系，输出 JSON 数组：
-[{"source": "实体名", "target": "实体名", "type": "关系类型", "confidence": 0.0-1.0, "evidence": "推理依据"}]
+### 第一步：排除已有关系
+检查新节点与上下文中每个实体的关系是否已被显式边（EXPLICIT）记录。
+如果已存在 EXPLCIT 边 → 跳过，不重复推理。
 
-注意：
-- 只发现隐式关系，如果两个实体之间已有显式关系则不要重复
-- 置信度要保守：只有强有力的推理依据才给 > 0.8
+### 第二步：按类型逐项推理
+
+#### 1. depends_on（依赖关系）
+**触发条件**：A 的核心功能/能力/存在前提依赖 B
+**反例（不是依赖）**：A "提到"B、"与B有关"、"使用B的API"（这是 uses，不是依赖）
+**置信度指南**：
+- 0.9+：A 在定义中明确依赖 B（如"Kubernetes 依赖 etcd 存储集群状态"）
+- 0.7-0.9：A 的核心流程中 B 是必要组件
+- 0.5-0.7：A 的某些场景需要 B，但非核心
+
+#### 2. trade_off（对立/取舍关系）
+**触发条件**：A 和 B 在同一目标维度上存在此消彼长的关系
+**要求**：必须在 evidence 中指明对立的维度（如"性能 vs 成本"、"灵活性 vs 复杂度"）
+
+#### 3. bridges（桥接关系）
+**触发条件**：A 连接了两个明显不同的知识领域/群落
+**要求**：必须在 evidence 中指明被桥接的两个领域
+
+#### 4. evolves_to（演化关系）
+**触发条件**：A 是 B 的前身/替代/下一代版本
+**关键证据**：时序先后 + 功能替代/增强关系
+**注意**：仅凭"A在B之后出现"不足以判定，需要功能演化证据
+
+#### 5. solves（解决关系）
+**触发条件**：A 解决了 B 中明确指出的问题/痛点
+**要求**：必须在 evidence 中指明被解决的具体问题
+
+#### 6. precedes（时序先后关系）🆕 V1.1
+**触发条件**：A 在时间/逻辑顺序上先于 B，且这种先后关系具有知识意义
+**反例（不是 precedes）**：A 和 B 只是同时出现、A 的文档发布时间早于 B 但无因果关系
+**置信度指南**：
+- 0.9+：明确的先后顺序 + 因果关联（如"TCP 握手 precedes 数据传输"）
+- 0.7-0.9：明确的时序先后，但无直接因果
+- 0.5-0.7：合理推断的先后关系
+
+#### 7. causes（因果关系）🆕 V1.1
+**触发条件**：A 是导致 B 发生/存在的直接原因
+**反例（不是 causes）**：A 和 B 正相关但无因果证据（相关≠因果）
+**要求**：必须能在 evidence 中描述因果链条
+**置信度指南**：
+- 0.9+：有明确的因果关系陈述（"A 导致 B"、"因为 A 所以 B"）
+- 0.7-0.9：强因果推理链条
+- 0.5-0.7：合理但非直接因果
+
+#### 8. contradicts（矛盾关系）🆕 V1.1
+**触发条件**：A 和 B 在同一事实上给出矛盾/对立的观点或结论
+**反例（不是 contradicts）**：A 和 B 讨论不同层面/角度，不是正面冲突
+**要求**：必须在 evidence 中指明冲突的具体维度
+**置信度指南**：
+- 0.9+：同一明确事实的正面矛盾陈述
+- 0.7-0.9：立场鲜明对立，但非同一事实
+- 0.5-0.7：观点分歧，可能调和
+
+#### 9. analogous_to（类比关系）🆕 V1.1
+**触发条件**：A 和 B 在结构/功能/原理上具有可比性，可以从一个理解另一个
+**反例（不是 analogous_to）**：A 和 B 只是同一类别（如"都是数据库"→这不是类比）
+**要求**：必须在 evidence 中指明类比的具体维度
+**置信度指南**：
+- 0.9+：明确的结构同构/功能对应（如"知识图谱中的节点类比数据库中的行"）
+- 0.7-0.9：多维度可类比
+- 0.5-0.7：单维度类比
+
+## 置信度校准指南
+- 0.9-1.0：有直接文本证据支持，几乎确定
+- 0.7-0.9：强推理链，多条间接证据
+- 0.5-0.7：合理推理，存在一定不确定性
+- 0.3-0.5：猜测性推理，证据不足
+- < 0.3：不应输出（质量不可接受）
+
+## 输出 JSON 数组
+[{"source": "实体名", "target": "实体名", "type": "depends_on|trade_off|bridges|evolves_to|solves|precedes|causes|contradicts|analogous_to", "confidence": 0.0-1.0, "evidence": "推理依据（引用具体信息源）"}]
+
+## 规则
+- 如果未发现任何隐式关系，输出空数组 []
+- 每个 source-target 对最多输出一个隐式关系
+- 推理依据必须引用新节点摘要中的具体信息
+- 不要推理"相关"、"类似"等模糊关系
 - 只输出 JSON 数组，不要其他内容"""
 
 
@@ -135,13 +213,28 @@ class GraphProcessor:
         default_label = label_map.get(analysis.type, "Entity")
 
         for entity in analysis.entities:
+            props: dict[str, Any] = {}
+            if entity.exists and entity.node_id:
+                props["node_id"] = entity.node_id
+            # V1.1: Pass entity metadata for node enrichment
+            if entity.aliases:
+                props["aliases"] = entity.aliases
+            if entity.subtype:
+                props["subtype"] = entity.subtype
+            if entity.domain:
+                props["domain"] = entity.domain
+            if entity.definition:
+                props["definition"] = entity.definition
+            if entity.importance:
+                props["importance"] = entity.importance
+
             if entity.exists:
                 actions.append(CompileAction(
                     action="update_entity",
                     label="Entity",
                     entity_name=entity.name,
                     is_new=False,
-                    properties={"node_id": entity.node_id},
+                    properties=props,
                 ))
             else:
                 actions.append(CompileAction(
@@ -149,6 +242,7 @@ class GraphProcessor:
                     label=default_label,
                     entity_name=entity.name,
                     is_new=True,
+                    properties=props,
                 ))
 
         return actions
@@ -269,6 +363,7 @@ class GraphProcessor:
         """Create or update a node in Neo4j."""
         entity_id = action.entity_name.replace(" ", "_")
         summary = self._extract_summary(content)
+        props = action.properties
 
         query = f"""
         MERGE (n:{action.label} {{id: $id}})
@@ -279,15 +374,35 @@ class GraphProcessor:
             n.updated_at = datetime()
         SET n.created_at = CASE WHEN n.created_at IS NULL
                             THEN datetime() ELSE n.created_at END
-        RETURN n.id AS id
         """
-        records = await self._db.execute_write(query, {
+        params: dict[str, Any] = {
             "id": entity_id,
             "name": action.entity_name,
             "content": content,
             "summary": summary,
             "source": source_path,
-        })
+        }
+
+        # V1.1: Store entity enrichment fields
+        if props.get("aliases"):
+            query += "\n        SET n.aliases = $aliases"
+            params["aliases"] = props["aliases"]
+        if props.get("subtype"):
+            query += "\n        SET n.subtype = $subtype"
+            params["subtype"] = props["subtype"]
+        if props.get("domain"):
+            query += "\n        SET n.domain = $domain"
+            params["domain"] = props["domain"]
+        if props.get("definition"):
+            query += "\n        SET n.definition = $definition"
+            params["definition"] = props["definition"]
+        if props.get("importance"):
+            query += "\n        SET n.importance = $importance"
+            params["importance"] = props["importance"]
+
+        query += "\n        RETURN n.id AS id"
+
+        records = await self._db.execute_write(query, params)
         return records[0]["id"] if records else entity_id
 
     # ------------------------------------------------------------------
@@ -297,34 +412,97 @@ class GraphProcessor:
     async def _create_explicit_edges_batch(
         self, relations: list[RelationInfo],
     ) -> list[str]:
-        """Batch create explicit edges in a single Neo4j transaction."""
+        """Batch create explicit edges with semantic labels (V1.1: extended edge types).
+
+        Edge type mapping:
+        - uses/contains/derives_from/implements → EXPLICIT
+        - causes → CAUSES
+        - precedes → PRECEDES
+        - is_a → IS_A
+        - contradicts → CONTRADICTS
+        - analogous_to → ANALOGOUS_TO
+        """
         if not relations:
             return []
 
-        edge_data = [
-            {
+        # V1.1: Semantic edge label mapping
+        SEMANTIC_EDGE_LABELS = {"causes", "precedes", "is_a", "contradicts", "analogous_to"}
+        SYMMETRIC_EDGES = {"analogous_to"}  # Edges that should be created in both directions
+
+        edge_data = []
+        for r in relations:
+            edge_type = r.type.lower().replace(" ", "_")
+            if edge_type in SEMANTIC_EDGE_LABELS:
+                neo4j_label = edge_type.upper()
+            else:
+                neo4j_label = "EXPLICIT"
+
+            edge_data.append({
                 "from_id": r.from_entity.replace(" ", "_"),
                 "to_id": r.to_entity.replace(" ", "_"),
-                "edge_type": r.type,
+                "edge_type": edge_type,
+                "neo4j_label": neo4j_label,
                 "context": r.evidence,
-            }
-            for r in relations
-        ]
+            })
+
+            # V1.1: Auto-create reverse edges for symmetric relations
+            if edge_type in SYMMETRIC_EDGES:
+                edge_data.append({
+                    "from_id": r.to_entity.replace(" ", "_"),
+                    "to_id": r.from_entity.replace(" ", "_"),
+                    "edge_type": edge_type,
+                    "neo4j_label": neo4j_label,
+                    "context": f"对称关系: {r.evidence}",
+                })
 
         query = """
         UNWIND $edges AS edge
         MATCH (a), (b) WHERE a.id = edge.from_id AND b.id = edge.to_id
-        MERGE (a)-[r:EXPLICIT {type: edge.edge_type}]->(b)
-        SET r.context = edge.context,
-            r.created_at = datetime()
+        CALL apoc.merge.relationship(a, edge.neo4j_label,
+            {type: edge.edge_type}, {},
+            b, {}
+        ) YIELD rel
+        SET rel.context = edge.context,
+            rel.created_at = datetime()
         RETURN edge.from_id + '-[' + edge.edge_type + ']->' + edge.to_id AS edge_id
         """
         try:
             records = await self._db.execute_write(query, {"edges": edge_data})
             return [r["edge_id"] for r in records]
         except Exception as exc:
-            logger.warning("Batch explicit edge creation failed: %s", exc)
+            # Fallback: use MERGE without APOC for environments without APOC
+            logger.debug("APOC-based edge creation failed, using MERGE fallback: %s", exc)
+            return await self._create_explicit_edges_batch_merge(edge_data)
+
+    async def _create_explicit_edges_batch_merge(
+        self, edge_data: list[dict[str, Any]],
+    ) -> list[str]:
+        """V1.1: Fallback edge creation using MERGE (no APOC dependency)."""
+        if not edge_data:
             return []
+        # Group by neo4j_label for separate MERGE queries
+        result_ids: list[str] = []
+        for edge in edge_data:
+            query = f"""
+            MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id
+            MERGE (a)-[r:{edge['neo4j_label']} {{type: $edge_type}}]->(b)
+            SET r.context = $context,
+                r.created_at = datetime()
+            RETURN a.id + '-[' + $edge_type + ']->' + b.id AS edge_id
+            """
+            try:
+                records = await self._db.execute_write(query, {
+                    "from_id": edge["from_id"],
+                    "to_id": edge["to_id"],
+                    "edge_type": edge["edge_type"],
+                    "context": edge.get("context", ""),
+                })
+                for r in records:
+                    result_ids.append(r.get("edge_id", ""))
+            except Exception as exc:
+                logger.warning("MERGE edge creation failed for %s->%s: %s",
+                               edge["from_id"], edge["to_id"], exc)
+        return result_ids
 
     # ------------------------------------------------------------------
     # 3e+3f. Background Implicit Relation Discovery
@@ -348,41 +526,78 @@ class GraphProcessor:
     async def _discover_implicit_relations(
         self, new_node_ids: list[str],
     ) -> list[ImplicitRelation]:
-        """Use LLM to discover implicit relations between new and existing nodes."""
+        """Use LLM to discover implicit relations with 2-hop context (V1.1 enhanced)."""
         if not new_node_ids:
             return []
 
-        # Build context: new nodes + their neighbors
+        # 1. Build context: new nodes + 2-hop neighbors + bridge entities
         context_parts = []
         for node_id in new_node_ids:
             node = await self._db.get_node_by_id(node_id)
             if node:
-                context_parts.append(f"【{node.get('name', node_id)}】: {node.get('summary', '无摘要')}")
-
-        # Get neighbors
-        neighbor_parts = []
-        for node_id in new_node_ids:
-            records = await self._db.execute_read(
-                """
-                MATCH (n)-[r]->(m) WHERE n.id = $id
-                RETURN type(r) AS rel_type, CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS semantic,
-                       m.name AS target_name, m.summary AS target_summary
-                LIMIT 10
-                """,
-                {"id": node_id},
-            )
-            for r in records:
-                neighbor_parts.append(
-                    f"({node_id}) -[:{r.get('semantic', r.get('rel_type', 'RELATED'))}]-> ({r['target_name']})"
+                subtype_hint = f"({node.get('subtype', 'unknown')})" if node.get('subtype') else ""
+                context_parts.append(
+                    f"【{node.get('name', node_id)}】{subtype_hint}: {node.get('summary', '无摘要')}"
                 )
 
+        # 2. Get 2-hop neighbors with path descriptions
+        two_hop_records = await self._db.execute_read(
+            """
+            MATCH (n)-[r1]->(m)-[r2]->(o)
+            WHERE n.id IN $ids
+              AND m.id <> n.id AND o.id <> n.id AND o.id <> m.id
+            RETURN DISTINCT
+                n.name AS source_name,
+                COALESCE(r1.type, type(r1)) AS rel1_semantic,
+                m.name AS mid_name, m.summary AS mid_summary,
+                COALESCE(r2.type, type(r2)) AS rel2_semantic,
+                o.name AS target_name, o.summary AS target_summary
+            LIMIT 50
+            """,
+            {"ids": new_node_ids},
+        )
+
+        path_descriptions: list[str] = []
+        seen_paths: set[str] = set()
+        for r in two_hop_records:
+            key = f"{r['source_name']}-{r['rel1_semantic']}-{r['mid_name']}-{r['rel2_semantic']}-{r['target_name']}"
+            if key not in seen_paths:
+                seen_paths.add(key)
+                path_descriptions.append(
+                    f"  {r['source_name']} -[{r['rel1_semantic']}]-> "
+                    f"{r['mid_name']} -[{r['rel2_semantic']}]-> {r['target_name']}"
+                )
+
+        # 3. Bridge entities (high PageRank nodes connecting different areas)
+        bridge_records = await self._db.execute_read(
+            """
+            MATCH (n) WHERE n.id IN $ids
+            MATCH (b) WHERE b.page_rank > 0.05 AND NOT b.id IN $ids
+            MATCH path = (n)-[*1..2]-(b)
+            RETURN DISTINCT b.name AS name, b.summary AS summary, b.page_rank AS page_rank
+            ORDER BY b.page_rank DESC LIMIT 10
+            """,
+            {"ids": new_node_ids},
+        )
+
+        # 4. Build user prompt
         user_prompt = "【新节点】\n" + "\n".join(context_parts) + "\n\n"
-        if neighbor_parts:
-            user_prompt += "【现有图谱关系】\n" + "\n".join(neighbor_parts) + "\n\n"
+        if path_descriptions:
+            user_prompt += "【2-hop 图谱路径】\n" + "\n".join(path_descriptions) + "\n\n"
+        if bridge_records:
+            user_prompt += "【高价值桥接节点】\n" + "\n".join(
+                f"- {b['name']}: {b.get('summary', '')}" for b in bridge_records
+            ) + "\n\n"
         user_prompt += "请发现隐式关系并输出 JSON 数组。如果没有发现隐式关系，输出空数组 []。"
 
+        # V1.1: Inject few-shot examples
+        fewshot = load_fewshot("implicit_fewshot.txt")
+        effective_system = IMPLICIT_SYSTEM_PROMPT
+        if fewshot:
+            effective_system = IMPLICIT_SYSTEM_PROMPT + "\n\n" + fewshot
+
         try:
-            result = await self._llm.chat_json(IMPLICIT_SYSTEM_PROMPT, user_prompt, model=self._reasoning_model)
+            result = await self._llm.chat_json(effective_system, user_prompt, model=self._reasoning_model)
         except Exception as exc:
             logger.warning("Implicit relation discovery failed: %s", exc)
             return []
@@ -401,21 +616,81 @@ class GraphProcessor:
                 rel_type = ImplicitRelationType(item.get("type", "depends_on"))
             except ValueError:
                 rel_type = ImplicitRelationType.DEPENDS_ON
+            confidence = float(item.get("confidence", 0.5))
+            if confidence < 0.3:  # V1.1: reject low-confidence relations
+                continue
             relations.append(ImplicitRelation(
                 source=item.get("source", ""),
                 target=item.get("target", ""),
                 type=rel_type,
-                confidence=float(item.get("confidence", 0.5)),
+                confidence=confidence,
                 evidence=item.get("evidence", ""),
             ))
-        return relations
+
+        # 5. Validate relations before returning (V1.1: post-validation)
+        validated = await self._validate_implicit_relations(relations)
+        return validated
+
+    async def _validate_implicit_relations(
+        self, relations: list[ImplicitRelation],
+    ) -> list[ImplicitRelation]:
+        """V1.1: Post-validate implicit relations — check node existence and deduplicate."""
+        if not relations:
+            return []
+        validated: list[ImplicitRelation] = []
+        seen_pairs: set[tuple[str, str]] = set()
+
+        for rel in relations:
+            # Skip empty source/target
+            if not rel.source or not rel.target:
+                continue
+
+            from_id = rel.source.replace(" ", "_")
+            to_id = rel.target.replace(" ", "_")
+
+            # Skip self-referencing
+            if from_id == to_id:
+                continue
+
+            # Deduplicate by source-target pair
+            pair = (from_id, to_id)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+
+            # Verify both nodes exist
+            node_exists = await self._db.execute_read(
+                "MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id "
+                "RETURN a.id AS a_id, b.id AS b_id",
+                {"from_id": from_id, "to_id": to_id},
+            )
+            if not node_exists:
+                logger.debug("Implicit relation skipped: node not found %s->%s", rel.source, rel.target)
+                continue
+
+            # Check no existing EXPLICIT edge already
+            existing = await self._db.execute_read(
+                "MATCH (a)-[r:EXPLICIT]->(b) WHERE a.id = $from_id AND b.id = $to_id "
+                "RETURN count(r) AS cnt",
+                {"from_id": from_id, "to_id": to_id},
+            )
+            if existing and existing[0]["cnt"] > 0:
+                logger.debug("Implicit relation skipped: EXPLICIT edge already exists %s->%s", rel.source, rel.target)
+                continue
+
+            validated.append(rel)
+
+        return validated
 
     # ------------------------------------------------------------------
     # 3f. Write Implicit Edges
     # ------------------------------------------------------------------
 
     async def _create_implicit_edge(self, rel: ImplicitRelation) -> None:
-        """Write an IMPLICIT relationship to Neo4j."""
+        """Write an IMPLICIT relationship to Neo4j.
+
+        V1.1: Symmetric relations (trade_off, analogous_to) get auto-created reverse edges.
+        """
         from_id = rel.source.replace(" ", "_")
         to_id = rel.target.replace(" ", "_")
 
@@ -436,6 +711,26 @@ class GraphProcessor:
             })
         except Exception as exc:
             logger.warning("Failed to create implicit edge %s→%s: %s", from_id, to_id, exc)
+
+        # V1.1: Auto-create reverse edges for symmetric relations
+        if rel.type in (ImplicitRelationType.TRADE_OFF, ImplicitRelationType.ANALOGOUS_TO):
+            reverse_query = """
+            MATCH (a), (b) WHERE a.id = $to_id AND b.id = $from_id
+            MERGE (a)-[r:IMPLICIT {type: $edge_type}]->(b)
+            SET r.confidence = $confidence,
+                r.evidence = $evidence,
+                r.discovered_at = datetime()
+            """
+            try:
+                await self._db.execute_write(reverse_query, {
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "edge_type": rel.type.value,
+                    "confidence": rel.confidence,
+                    "evidence": f"对称关系: {rel.evidence}",
+                })
+            except Exception as exc:
+                logger.debug("Failed to create reverse implicit edge %s→%s: %s", to_id, from_id, exc)
 
     # ------------------------------------------------------------------
     # 3g. Graph Structure Update (batched)

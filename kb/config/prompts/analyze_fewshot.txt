@@ -1,0 +1,34 @@
+## Few-shot 示例
+
+### 示例 1 — factual（事实型）
+输入：
+【素材内容】
+Neo4j 是一个图数据库管理系统，由 Neo Technology 开发。它使用属性图模型，支持 ACID 事务。
+Neo4j 的查询语言是 Cypher，一种声明式图查询语言。最新版本是 5.x。
+
+【现有知识库节点摘要】
+图数据库: 使用图结构进行语义查询的数据库
+
+输出：
+{"type":"factual","type_confidence":0.95,"classification_reason":"素材以具体数据、定义和技术规格为核心，无因果链条或比较结构","entities":[{"name":"Neo4j","aliases":["Neo4j图数据库"],"subtype":"technology","domain":"database","importance":10,"definition":"Neo4j 是一个基于属性图模型的图数据库管理系统","exists":true},{"name":"Cypher","aliases":["Cypher查询语言"],"subtype":"technology","domain":"database","importance":8,"definition":"Cypher 是 Neo4j 的声明式图查询语言","exists":false}],"relations":[{"from":"Neo4j","to":"Cypher","type":"uses","evidence":"Neo4j 的查询语言是 Cypher，一种声明式图查询语言"}],"conflicts":[],"gaps":[],"compile_suggestion":"创建 Cypher 实体节点，更新 Neo4j 节点内容"}
+
+### 示例 2 — conceptual（概念型）
+输入：
+【素材内容】
+微服务架构是一种将应用程序构建为一组小型、独立服务的架构风格。每个服务运行在自己的进程中，
+通过轻量级机制（通常是 HTTP API）进行通信。微服务架构的核心理念是：围绕业务能力组织服务，
+每个服务可以由不同的团队独立开发、部署和扩展。
+
+输出：
+{"type":"conceptual","type_confidence":0.92,"classification_reason":"素材阐述了一种架构方法论的核心定义和原则，属于概念型","entities":[{"name":"微服务架构","aliases":["Microservices","微服务"],"subtype":"methodology","domain":"architecture","importance":10,"definition":"微服务架构是一种将应用拆分为独立小服务的架构风格","exists":true}],"relations":[],"conflicts":[],"gaps":[],"compile_suggestion":"创建/更新微服务架构概念节点"}
+
+### 示例 3 — comparative（对比型）
+输入：
+【素材内容】
+GraphRAG 与 RAG 的对比：
+1. 检索方式：RAG 使用向量检索，GraphRAG 使用图结构检索
+2. 推理能力：RAG 适合简单问答，GraphRAG 擅长多跳推理
+3. 部署成本：RAG 较低（仅需向量数据库），GraphRAG 较高（需图数据库）
+
+输出：
+{"type":"comparative","type_confidence":0.97,"classification_reason":"素材以 vs 对比结构为核心，对两种技术进行多维度比较","entities":[{"name":"GraphRAG","aliases":[],"subtype":"technology","domain":"AI","importance":9,"definition":"GraphRAG 是基于知识图谱的检索增强生成技术","exists":false},{"name":"RAG","aliases":["Retrieval Augmented Generation"],"subtype":"technology","domain":"AI","importance":9,"definition":"RAG 是结合检索和生成的 AI 技术","exists":true}],"relations":[{"from":"GraphRAG","to":"RAG","type":"contrasts_with","evidence":"GraphRAG 使用图结构检索，RAG 使用向量检索"}],"conflicts":[],"gaps":["GraphRAG 的具体性能数据"],"compile_suggestion":"创建 GraphRAG 实体节点和对比关系边"}
