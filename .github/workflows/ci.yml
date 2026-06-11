@@ -20,13 +20,13 @@ jobs:
           cd kb
           pip install -r requirements.txt
       - name: Compile check
-        run: |
-          cd kb
-          find app -name "*.py" -exec python3 -m py_compile {} \;
+        working-directory: kb
+        run: find app -name "*.py" -exec python3 -m py_compile {} \;
       - name: Run pytest
-        run: |
-          cd kb
-          python3 -m pytest tests/ -x -q --tb=short
+        working-directory: kb
+        env:
+          PYTHONPATH: ${{ github.workspace }}/kb
+        run: python3 -m pytest tests/ -v --tb=long
 
   frontend-build:
     name: Frontend Build
