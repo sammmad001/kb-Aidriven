@@ -133,20 +133,30 @@ class QueryUnderstander:
         if not valid_terms:
             return []
 
-        # Batch search: use a single Cypher query with all terms
+        # Dynamically build Cypher query based on actual term count
+        terms_slice = valid_terms[:5]
+        n_terms = len(terms_slice)
+        
+        # Build WHERE clauses and params only for available terms
+        clauses: list[str] = []
+        kw_params: dict[str, str] = {}
+        for i, term in enumerate(terms_slice):
+            key = f"kw{i}"
+            kw_params[key] = term
+            clauses.append(f"(n.id CONTAINS ${key} OR n.name CONTAINS ${key})")
+        
+        where_clause = " OR ".join(clauses)
+
+        # Batch search: single Cypher query with dynamic clauses
         records = await self._db.execute_read(
-            """
+            f"""
             MATCH (n)
             WHERE (n:Entity OR n:Concept)
-              AND (n.id CONTAINS $kw0 OR n.name CONTAINS $kw0
-                   OR n.id CONTAINS $kw1 OR n.name CONTAINS $kw1
-                   OR n.id CONTAINS $kw2 OR n.name CONTAINS $kw2
-                   OR n.id CONTAINS $kw3 OR n.name CONTAINS $kw3
-                   OR n.id CONTAINS $kw4 OR n.name CONTAINS $kw4)
+              AND ({where_clause})
             RETURN n.id AS id, n.name AS name
             LIMIT 10
             """,
-            {f"kw{i}": t for i, t in enumerate(valid_terms[:5])},
+            kw_params,
         )
         return [r["name"] for r in records if r.get("name")]
 

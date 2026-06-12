@@ -259,6 +259,17 @@ async def search_entities(q: str = Query(..., min_length=1)) -> dict:
     return {"results": results}
 
 
+def _to_iso(dt) -> str | None:
+    """Convert Neo4j DateTime or Python datetime to ISO string."""
+    if dt is None:
+        return None
+    if hasattr(dt, 'iso_format'):  # neo4j.time.DateTime
+        return dt.iso_format()
+    if hasattr(dt, 'isoformat'):   # Python datetime
+        return dt.isoformat()
+    return str(dt)
+
+
 @router.get("/graph/node/{node_id}", response_model=NodeDetail, dependencies=[Depends(verify_api_token)])
 async def get_node_detail(node_id: str) -> NodeDetail:
     """Get full detail of a single node."""
@@ -344,11 +355,11 @@ async def get_node_detail(node_id: str) -> NodeDetail:
         content=r.get("content", ""),
         tags=r.get("tags") or [],
         page_rank=r.get("page_rank", 0.0),
-        cluster_id=r.get("cluster_id", 0),
+        cluster_id=r.get("cluster_id") or 0,
         in_degree=in_degree,
         out_degree=out_degree,
-        created_at=r.get("created_at"),
-        updated_at=r.get("updated_at"),
+        created_at=_to_iso(r.get("created_at")),
+        updated_at=_to_iso(r.get("updated_at")),
         relations=relations,
     )
 
