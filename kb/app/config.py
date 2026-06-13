@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     # --- Environment ---
     environment: Literal["dev", "production"] = "dev"
 
+    # --- Social Media Fetcher ---
+    social_xhs_cookie: str = ""          # 小红书Cookie字符串（a1=xxx; web_session=xxx; ...）
+    social_weibo_cookie: str = ""        # 微博Cookie字符串（SUB=xxx; ...）
+    social_fetch_timeout: int = 60       # 单次抓取超时秒数
+    social_ocr_paddle_enabled: bool = True  # 是否启用PaddleOCR（免费本地OCR）
+    social_ocr_dashscope_key: str = ""   # OCR兜底用的DashScope API Key（为空时仅用PaddleOCR）
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

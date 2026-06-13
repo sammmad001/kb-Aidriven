@@ -86,6 +86,113 @@ class InputFormat(str, Enum):
     AUDIO = "audio"
 
 
+class SocialPlatform(str, Enum):
+    """Supported social media platforms for content fetching."""
+    XIAOHONGSHU = "xiaohongshu"
+    WEIBO = "weibo"
+
+
+class FetchStatus(str, Enum):
+    """Status of a social content fetch operation."""
+    FETCHING = "fetching"
+    DONE = "done"
+    FAILED = "failed"
+
+
+# ---------------------------------------------------------------------------
+# Social Media Models
+# ---------------------------------------------------------------------------
+
+class SocialImage(BaseModel):
+    """A single image extracted from a social media post."""
+    url: str
+    base64: str = ""         # Downloaded image as base64
+    ocr_text: str = ""       # OCR-extracted text from this image
+    ocr_engine: str = ""     # Which engine produced the OCR (paddle / qwen-vl)
+    width: int = 0
+    height: int = 0
+
+
+class SocialContent(BaseModel):
+    """Content extracted from a social media post."""
+    url: str
+    platform: SocialPlatform
+    title: str = ""
+    text: str = ""               # Plain text body (paragraph structure preserved)
+    tags: list[str] = Field(default_factory=list)  # #话题#
+    images: list[SocialImage] = Field(default_factory=list)
+    interaction: dict[str, int] = Field(default_factory=dict)  # likes, collects, comments
+    author_name: str = ""
+    publish_time: str = ""       # ISO datetime string
+    fetch_status: FetchStatus = FetchStatus.FETCHING
+    error: str = ""
+
+    def to_ingest_markdown(self) -> str:
+        """Convert this social content to a Markdown string ready for the IngestPipeline.
+
+        The generated Markdown includes the title, body text, OCR-extracted image text,
+        and metadata footer. This is the canonical format fed into Step 1 (Preprocess).
+        """
+        lines: list[str] = []
+
+        # Title
+        if self.title:
+            lines.append(f"# {self.title}")
+            lines.append("")
+        else:
+            # Fallback title from URL path
+            slug = self.url.rstrip("/").split("/")[-1] or "untitled"
+            lines.append(f"# {slug}")
+            lines.append("")
+
+        # Source attribution
+        platform_cn = "小红书" if self.platform == SocialPlatform.XIAOHONGSHU else "微博"
+        lines.append(f"> 来源: [{platform_cn}]({self.url})")
+        if self.author_name:
+            lines.append(f"> 作者: {self.author_name}")
+        if self.publish_time:
+            lines.append(f"> 发布时间: {self.publish_time}")
+        lines.append("")
+
+        # Body text
+        if self.text:
+            lines.append(self.text)
+            lines.append("")
+
+        # Images with OCR text
+        for i, img in enumerate(self.images):
+            if img.ocr_text:
+                lines.append(f"> 📷 图片 {i+1} 文字提取 (via {img.ocr_engine}):")
+                lines.append("> ")
+                for ocr_line in img.ocr_text.strip().split("\n"):
+                    lines.append(f"> {ocr_line}")
+                lines.append("")
+
+        # Tags
+        if self.tags:
+            lines.append("**话题标签**: " + ", ".join(f"#{t}" for t in self.tags))
+            lines.append("")
+
+        # Metadata footer
+        lines.append("---")
+        lines.append(f"*平台: {platform_cn} | URL: {self.url}*")
+        if self.interaction:
+            parts = []
+            for k, v in self.interaction.items():
+                parts.append(f"{k}: {v}")
+            lines.append(f"*互动: {' | '.join(parts)}*")
+
+        return "\n".join(lines)
+
+
+class OCRResult(BaseModel):
+    """Result from a single OCR extraction."""
+    text: str                 # Extracted text
+    engine: str               # "paddle" or "qwen-vl"
+    confidence: float = 0.0   # 0.0 - 1.0
+    duration_ms: float = 0.0  # Processing time in milliseconds
+
+
 # ---------------------------------------------------------------------------
 # Ingest Models
 # ---------------------------------------------------------------------------
@@ -198,6 +305,19 @@ class GraphProcessResult(BaseModel):
     cluster_updates: list[int] = Field(default_factory=list)
 
 
+class TokenUsage(BaseModel):
+    """LLM token usage statistics from a single API call or accumulated calls."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, other: "TokenUsage") -> None:
+        """Accumulate another TokenUsage into this one (mutates in-place)."""
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        self.total_tokens += other.total_tokens
+
+
 class IngestResult(BaseModel):
     """Final result of a complete ingest pipeline run."""
     task_id: str = Field(default_factory=lambda: uuid4().hex)
@@ -209,6 +329,7 @@ class IngestResult(BaseModel):
     timings: dict[str, float] = Field(default_factory=dict)
     error: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
+    token_usage: Optional["TokenUsage"] = None
 
 
 # ---------------------------------------------------------------------------

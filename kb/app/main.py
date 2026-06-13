@@ -15,7 +15,7 @@ from app.api import graph, ingest, ingest_adapters, query, tasks
 from app.config import get_settings
 from app.feishu import router as feishu_router
 from app.feishu.client import FeishuClient
-from app.feishu.handlers import init_handlers
+from app.feishu.handlers import init_handlers, init_social_services
 from app.feishu.ws_client import FeishuWsClient
 from app.ingest.pipeline import IngestPipeline
 from app.lint.checker import LintChecker
@@ -65,6 +65,8 @@ _feishu_ws_client: FeishuWsClient | None = None
 _ingest_tracker: IngestTracker | None = None
 _ingest_retry_scheduler: IngestRetryScheduler | None = None
 _implicit_reviewer: ImplicitRelationReviewer | None = None
+_social_fetcher: Any = None
+_ocr: Any = None
 
 
 @asynccontextmanager
@@ -72,6 +74,7 @@ async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
     global _ingest_pipeline, _query_pipeline, _feishu_client, _feishu_ws_client
     global _ingest_tracker, _ingest_retry_scheduler, _implicit_reviewer
+    global _social_fetcher, _ocr
     settings = get_settings()
 
     # Validate production configuration
@@ -108,14 +111,45 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Feishu event mode: Webhook (HTTP push) -> POST /webhook/feishu")
 
+    # Initialize ingest tracker (Neo4j-based) — must precede init_handlers
+    _ingest_tracker = IngestTracker(_ingest_pipeline._db)
+
     # Initialize shared handlers (used by both webhook and WebSocket)
-    init_handlers(_ingest_pipeline, _feishu_client, _query_pipeline)
+    init_handlers(_ingest_pipeline, _feishu_client, _query_pipeline, tracker=_ingest_tracker)
+
+    # V2.1: Initialize social media fetcher + OCR (optional)
+    try:
+        from app.services.social_fetcher import SocialFetcher
+        from app.ingest.ocr import ImageOCRExtractor
+
+        _social_fetcher = SocialFetcher(
+            cookies_xhs=settings.social_xhs_cookie,
+            cookies_weibo=settings.social_weibo_cookie,
+            fetch_timeout=settings.social_fetch_timeout,
+        )
+        if settings.social_xhs_cookie or settings.social_weibo_cookie:
+            await _social_fetcher.start()
+            logger.info("SocialFetcher started (Playwright + stealth)")
+        else:
+            logger.info(
+                "SocialFetcher created but NOT started — "
+                "set SOCIAL_XHS_COOKIE / SOCIAL_WEIBO_COOKIE to enable"
+            )
+
+        _ocr = ImageOCRExtractor(
+            dashscope_api_key=settings.social_ocr_dashscope_key or settings.dashscope_api_key,
+            paddle_enabled=settings.social_ocr_paddle_enabled,
+        )
+        logger.info("OCR engine initialized")
+
+        init_social_services(social_fetcher=_social_fetcher, ocr=_ocr)
+    except ImportError as exc:
+        logger.info("Social media services not available: %s", exc)
+    except Exception as exc:
+        logger.warning("Social media services init failed (non-fatal): %s", exc)
 
     # Initialize lint checker
     lint_checker = LintChecker(_ingest_pipeline._db)
-
-    # Initialize ingest tracker (Neo4j-based)
-    _ingest_tracker = IngestTracker(_ingest_pipeline._db)
 
     # Initialize ingest retry scheduler
     _ingest_retry_scheduler = IngestRetryScheduler(
@@ -149,6 +183,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    if _social_fetcher:
+        try:
+            await _social_fetcher.shutdown()
+            logger.info("SocialFetcher shut down")
+        except Exception as exc:
+            logger.warning("SocialFetcher shutdown error: %s", exc)
     if _implicit_reviewer:
         _implicit_reviewer.shutdown()
     if _ingest_retry_scheduler:

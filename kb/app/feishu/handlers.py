@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import re
 import time
 import uuid
 from collections import OrderedDict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.feishu.cards import (
     build_complete_card,
@@ -20,7 +21,33 @@ from app.feishu.cards import (
 )
 from app.feishu.client import FeishuClient
 from app.ingest.pipeline import IngestPipeline
-from app.models import GraphStats, IngestRequest, InputFormat, QueryRequest
+from app.models import (
+    GraphStats,
+    IngestRequest,
+    IngestOptions,
+    InputFormat,
+    QueryRequest,
+    SocialPlatform,
+)
+
+if TYPE_CHECKING:
+    from app.services.ingest_tracker import IngestTracker
+
+# Lazy imports for social services (to avoid hard dependency)
+try:
+    from app.services.social_fetcher import SocialFetcher, detect_social_url
+    SOCIAL_FETCHER_AVAILABLE = True
+except ImportError:
+    SOCIAL_FETCHER_AVAILABLE = False
+    detect_social_url = None  # type: ignore
+    SocialFetcher = None  # type: ignore
+
+try:
+    from app.ingest.ocr import ImageOCRExtractor
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+    ImageOCRExtractor = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -64,18 +91,38 @@ _background_tasks: set[asyncio.Task] = set()
 _pipeline: IngestPipeline | None = None
 _feishu_client: FeishuClient | None = None
 _query_pipeline: Any = None
+_tracker: "IngestTracker | None" = None
+
+# Social media services (set by init_social_services)
+_social_fetcher: Any = None  # SocialFetcher | None
+_ocr: Any = None             # ImageOCRExtractor | None
 
 
 def init_handlers(
     ingest_pipeline: IngestPipeline,
     feishu_client: FeishuClient,
     query_pipeline: Any,
+    tracker: "IngestTracker | None" = None,
 ) -> None:
-    """Initialize handler dependencies."""
-    global _pipeline, _feishu_client, _query_pipeline
+    """Initialize handler dependencies.
+
+    V1.2: tracker enables IngestRecord creation for feishu-channel ingests.
+    """
+    global _pipeline, _feishu_client, _query_pipeline, _tracker
     _pipeline = ingest_pipeline
     _feishu_client = feishu_client
     _query_pipeline = query_pipeline
+    _tracker = tracker
+
+
+def init_social_services(
+    social_fetcher: Any = None,
+    ocr: Any = None,
+) -> None:
+    """Initialize social media fetching + OCR services (optional)."""
+    global _social_fetcher, _ocr
+    _social_fetcher = social_fetcher
+    _ocr = ocr
 
 
 # ======================================================================
@@ -129,7 +176,11 @@ async def handle_text(content: dict, message_id: str) -> None:
 
 
 async def handle_rich_text(content: dict, message_id: str) -> None:
-    """Handle rich text: extract plain text and links."""
+    """Handle rich text: extract plain text and links.
+
+    If a social media URL is detected (小红书/微博), route to the
+    social content fetcher + OCR pipeline. Otherwise, treat as normal text.
+    """
     text_parts = []
     for block in content.get("content", []):
         for element in block:
@@ -139,8 +190,18 @@ async def handle_rich_text(content: dict, message_id: str) -> None:
                 text_parts.append(element.get("href", ""))
 
     combined = " ".join(text_parts).strip()
-    if combined:
-        await handle_ingest_text(combined, message_id)
+    if not combined:
+        return
+
+    # Check for social media URLs
+    if _social_fetcher and SOCIAL_FETCHER_AVAILABLE and detect_social_url:
+        platform, social_url = detect_social_url(combined)
+        if platform:
+            await _handle_social_url(social_url, platform, message_id)
+            return
+
+    # Default: treat as normal text ingest
+    await handle_ingest_text(combined, message_id)
 
 
 async def handle_image(content: dict, message_id: str) -> None:
@@ -385,9 +446,30 @@ async def _run_pipeline_and_send(
     file_name: str | None = None,
     file_mime: str | None = None,
 ) -> None:
-    """Background task: run pipeline and send complete card as new reply."""
+    """Background task: run pipeline and send complete card as new reply.
+
+    V1.2: Creates IngestRecord for feishu-channel tracking and records token usage.
+    """
     if not _pipeline or not _feishu_client:
         return
+
+    # Generate deterministic source_id and content_hash for dedup
+    source_id = f"feishu-{message_id}"
+    text_content = source[:10000] if len(source) > 10000 else source
+    content_hash = hashlib.sha256(text_content.encode("utf-8")).hexdigest()
+
+    # Create/check IngestRecord
+    if _tracker:
+        record = await _tracker.record_attempt(
+            source_id=source_id,
+            source_type="feishu",
+            content_hash=content_hash,
+        )
+        if record.get("exists") and record.get("status") in ("completed", "skipped"):
+            await _feishu_client.reply_text(message_id, "该消息已经处理过，跳过。")
+            return
+        if not record.get("exists") or record.get("status") != "processing":
+            await _tracker.mark_processing(source_id)
 
     try:
         request = IngestRequest(
@@ -397,12 +479,21 @@ async def _run_pipeline_and_send(
         )
         result = await _pipeline.run(request)
 
+        # Track completion with token usage
+        if _tracker:
+            await _tracker.mark_completed(
+                source_id, kb_task_id=result.task_id,
+                token_usage=result.token_usage,
+            )
+
         # Send complete card as a new reply message
         complete_card = build_complete_card(result)
         await _feishu_client.reply_message(message_id, complete_card)
 
     except Exception as exc:
         logger.exception("Ingest pipeline failed for task %s", task_id)
+        if _tracker:
+            await _tracker.mark_failed(source_id, str(exc))
         # Friendly error for Pydantic validation errors (e.g. file too large)
         err_msg = str(exc)
         if "string_too_long" in err_msg or "String should have at most" in err_msg:
@@ -451,3 +542,135 @@ async def send_error(message_id: str, message: str) -> None:
             await _feishu_client.reply_message(message_id, card)
         except Exception as exc:
             logger.warning("Failed to send error card for message %s: %s", message_id, exc)
+
+
+# ======================================================================
+# Social Media URL Handling
+# ======================================================================
+
+async def _handle_social_url(
+    url: str, platform: SocialPlatform, message_id: str
+) -> None:
+    """Handle a social media URL: fetch content → OCR images → ingest pipeline.
+
+    The flow:
+        1. Reply immediately with "正在提取…" (webhook < 3s requirement)
+        2. Background task: fetch → download images → OCR → markdown → pipeline
+        3. Send complete card on finish (or error card on failure)
+    """
+    if not _feishu_client or not _pipeline:
+        return
+
+    platform_cn = "小红书" if platform == SocialPlatform.XIAOHONGSHU else "微博"
+    await _feishu_client.reply_text(message_id, f"🔍 正在提取{platform_cn}内容...")
+
+    task = asyncio.create_task(
+        _run_social_fetch_and_ingest(url, platform, message_id)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _run_social_fetch_and_ingest(
+    url: str, platform: SocialPlatform, message_id: str
+) -> None:
+    """Background task: full social media → knowledge pipeline.
+
+    V1.2: Creates IngestRecord for feishu-channel tracking and records token usage.
+    """
+    if not _pipeline or not _feishu_client or not _social_fetcher:
+        return
+
+    platform_cn = "小红书" if platform == SocialPlatform.XIAOHONGSHU else "微博"
+    t_start = time.time()
+
+    # Generate deterministic source_id for dedup
+    source_id = f"feishu-social-{hashlib.sha256(url.encode()).hexdigest()[:16]}"
+
+    try:
+        # --- Step 0a: Fetch content via Playwright/httpx ---
+        content = await _social_fetcher.fetch(url, platform)
+
+        if content.fetch_status.value == "failed":
+            if _tracker:
+                await _tracker.record_attempt(
+                    source_id=source_id, source_type="feishu",
+                    content_hash=hashlib.sha256(url.encode()).hexdigest(),
+                )
+                await _tracker.mark_failed(source_id, content.error or "fetch failed")
+            await _feishu_client.reply_text(
+                message_id,
+                f"❌ {platform_cn}内容提取失败: {content.error}",
+            )
+            return
+
+        # --- Step 0b: Download images + OCR ---
+        ocr_engine = "none"
+        if _ocr and content.images:
+            images_with_data = [
+                img for img in content.images if img.base64
+            ]
+            if images_with_data:
+                await _feishu_client.reply_text(
+                    message_id,
+                    f"📷 正在识别 {len(images_with_data)} 张图片中的文字...",
+                )
+                b64_list = [img.base64 for img in images_with_data]
+                ocr_results = await _ocr.extract_batch(b64_list)
+                for i, result in enumerate(ocr_results):
+                    images_with_data[i].ocr_text = result.text
+                    images_with_data[i].ocr_engine = result.engine
+                ocr_engine = ocr_results[0].engine if ocr_results else "none"
+
+        # --- Step 0c: Convert to Markdown ---
+        markdown = content.to_ingest_markdown()
+        content_hash = hashlib.sha256(markdown[:10000].encode("utf-8")).hexdigest()
+
+        # Create IngestRecord
+        if _tracker:
+            record = await _tracker.record_attempt(
+                source_id=source_id, source_type="feishu",
+                content_hash=content_hash,
+            )
+            if record.get("exists") and record.get("status") in ("completed", "skipped"):
+                await _feishu_client.reply_text(message_id, "该内容已经处理过，跳过。")
+                return
+            await _tracker.mark_processing(source_id)
+
+        # --- Step 1-4: Ingest pipeline (same as any text input) ---
+        request = IngestRequest(
+            source=markdown,
+            options=IngestOptions(
+                format=InputFormat.MARKDOWN,
+                channel="feishu",
+                tags=content.tags,
+            ),
+        )
+        result = await _pipeline.run(request)
+
+        # Track completion with token usage
+        if _tracker:
+            await _tracker.mark_completed(
+                source_id, kb_task_id=result.task_id,
+                token_usage=result.token_usage,
+            )
+
+        # --- Build and send complete card ---
+        complete_card = build_complete_card(result)
+        await _feishu_client.reply_message(message_id, complete_card)
+
+        # Log timing
+        elapsed = time.time() - t_start
+        image_count = len(content.images)
+        ocr_count = sum(1 for img in content.images if img.ocr_text)
+        logger.info(
+            "Social ingest complete: platform=%s url=%s elapsed=%.1fs "
+            "images=%d ocr=%d engine=%s",
+            platform.value, url, elapsed, image_count, ocr_count, ocr_engine,
+        )
+
+    except Exception as exc:
+        logger.exception("Social fetch+ingest failed for %s", url)
+        if _tracker:
+            await _tracker.mark_failed(source_id, str(exc))
+        await send_error(message_id, f"{platform_cn}知识处理失败: {exc}")

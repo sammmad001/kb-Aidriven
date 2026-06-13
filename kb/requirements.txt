@@ -16,3 +16,15 @@ respx>=0.22
 lark-oapi>=1.0.0
 apscheduler>=3.10
 cryptography>=42.0
+
+# V2.1: Social media content fetching (ECS Playwright)
+playwright>=1.48
+# playwright-stealth is NOT on PyPI; the code handles its absence gracefully
+# browserforge — browser fingerprint generation (no PyPI package; install via git)
+# See: https://github.com/kaliiiiiiiiii/browserforge
+
+# V2.1: Free local OCR (PaddleOCR) — installed separately on ECS
+# pip install paddlepaddle==3.2.2 paddleocr
+
+# V2.1: OCR fallback — DashScope qwen-vl-max (uses OpenAI-compatible SDK)
+openai>=1.0
