@@ -45,6 +45,7 @@ jobs:
             --exclude='raw/sources/*' \
             --exclude='wiki/*' \
             --exclude='tests/' \
+            --exclude='data/' \
             -e "ssh -o ConnectTimeout=10" \
             kb/ ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/
 
