@@ -57,7 +57,7 @@ class KnowledgeAdapter(ABC):
 
     async def transform(
         self, extracted: ExtractedKnowledge
-    ) -> tuple[str, "IngestOptions"]:
+    ) -> tuple[str, dict]:
         """Transform extracted knowledge into KB Ingest API format.
 
         Returns:

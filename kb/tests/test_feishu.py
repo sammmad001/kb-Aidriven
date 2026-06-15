@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from app.feishu.cards import (
     build_ack_card,
@@ -23,8 +22,6 @@ from app.models import (
     EntityInfo,
     GraphProcessResult,
     GraphStats,
-    ImplicitRelation,
-    ImplicitRelationType,
     IngestResult,
     MaterialType,
     QueryResult,
@@ -44,25 +41,25 @@ class TestCrypto:
 
     def test_verify_signature_with_valid_data(self):
         """Valid signature should pass verification."""
-        token = "test_verification_token"
+        encrypt_key = "test_encrypt_key"
         timestamp = "1234567890"
         nonce = "test_nonce"
         body = '{"type":"url_verification"}'
 
         import hashlib
-        sign_base = f"{timestamp}{nonce}{token}{body}"
+        sign_base = f"{timestamp}{nonce}{encrypt_key}{body}"
         computed = hashlib.sha256(sign_base.encode("utf-8")).hexdigest()
 
-        assert verify_signature(token, timestamp, nonce, body, computed) is True
+        assert verify_signature(encrypt_key, timestamp, nonce, body, computed) is True
 
     def test_verify_signature_with_invalid_signature(self):
         """Invalid signature should fail."""
-        assert verify_signature("token", "ts", "nonce", "body", "wrong_signature") is False
+        assert verify_signature("key", "ts", "nonce", "body", "wrong_signature") is False
 
     def test_verify_signature_with_empty_fields(self):
         """Empty fields should fail."""
         assert verify_signature("", "ts", "nonce", "body", "sig") is False
-        assert verify_signature("token", "", "nonce", "body", "sig") is False
+        assert verify_signature("key", "", "nonce", "body", "sig") is False
 
 
 # ======================================================================
@@ -92,7 +89,7 @@ class TestCards:
         assert "RAG" in card_json
 
     def test_build_analysis_card_with_conflicts(self):
-        from app.models import ConflictInfo, ConflictType
+        from app.models import ConflictInfo
         analysis = AnalysisReport(
             type=MaterialType.RELATIONAL,
             entities=[],

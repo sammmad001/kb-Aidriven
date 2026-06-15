@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from app.database import Neo4jDatabase
 from app.ingest.fewshot import load_fewshot
@@ -17,6 +16,9 @@ from app.models import (
     MaterialType,
     RelationInfo,
 )
+
+if TYPE_CHECKING:
+    from app.models import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +151,11 @@ class Analyzer:
         self._db = db
         self._model = model
 
-    async def analyze(self, raw_content: str, raw_path: str) -> AnalysisReport:
-        """Run full analysis: LLM classification + entity verification + conflict detection."""
+    async def analyze(self, raw_content: str, raw_path: str, _usage: "TokenUsage | None" = None) -> AnalysisReport:
+        """Run full analysis: LLM classification + entity verification + conflict detection.
+
+        V1.2: When _usage is provided, LLM token consumption is recorded.
+        """
         # 1. Get Neo4j nodes summary for context
         nodes_summary = await self._db.get_nodes_summary()
 
@@ -169,7 +174,7 @@ class Analyzer:
             effective_system = SYSTEM_PROMPT + "\n\n" + fewshot
 
         try:
-            result = await self._llm.chat_json(effective_system, user_prompt, model=self._model)
+            result = await self._llm.chat_json(effective_system, user_prompt, model=self._model, _usage=_usage)
         except Exception as exc:
             logger.error("LLM analysis failed: %s", exc)
             # Fallback: basic factual classification

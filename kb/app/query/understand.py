@@ -135,8 +135,7 @@ class QueryUnderstander:
 
         # Dynamically build Cypher query based on actual term count
         terms_slice = valid_terms[:5]
-        n_terms = len(terms_slice)
-        
+
         # Build WHERE clauses and params only for available terms
         clauses: list[str] = []
         kw_params: dict[str, str] = {}

@@ -146,7 +146,8 @@ async def ingest_miromind(
             )
             if result.status.value == "completed":
                 await _tracker.mark_completed(
-                    extracted.source_id, kb_task_id=result.task_id
+                    extracted.source_id, kb_task_id=result.task_id,
+                    token_usage=result.token_usage,
                 )
             else:
                 await _tracker.mark_failed(
@@ -240,7 +241,10 @@ async def ingest_retry_one(source_id: str, bg: BackgroundTasks) -> dict:
                 IngestRequest(source=source, options=options)
             )
             if result.status.value == "completed":
-                await _tracker.mark_completed(source_id, kb_task_id=result.task_id)
+                await _tracker.mark_completed(
+                    source_id, kb_task_id=result.task_id,
+                    token_usage=result.token_usage,
+                )
             else:
                 await _tracker.mark_failed(source_id, result.error or "unknown error")
         except Exception as exc:

@@ -64,6 +64,10 @@ export default function StatsPanel({ stats }: StatsPanelProps) {
           <TypeRow color="#f59e0b" label="bridges" desc="桥接" />
           <TypeRow color="#10b981" label="evolves_to" desc="演化" />
           <TypeRow color="#a855f7" label="solves" desc="解决" />
+          <TypeRow color="#06b6d4" label="precedes" desc="先于" />
+          <TypeRow color="#f43f5e" label="causes" desc="因果" />
+          <TypeRow color="#eab308" label="contradicts" desc="矛盾" />
+          <TypeRow color="#8b5cf6" label="analogous_to" desc="类比" />
         </div>
       </div>
     </div>

@@ -1,10 +1,10 @@
 """Lint checker: quality checks for the knowledge graph.
 
 Implementation status (4/7 checks implemented):
-  ✅ Orphan nodes
-  ✅ Naming consistency
-  ✅ Missing relations (low degree)
-  ✅ Stale content detection
+  ✅ Orphan nodes (check_orphan_nodes)
+  ✅ Duplicate nodes (check_duplicate_nodes) — name similarity detection
+  ✅ Low confidence implicit edges (check_low_confidence_edges)
+  ✅ Broken relations (check_broken_relations) — dangling BELONGS_TO edges
   ❌ Factual contradiction detection (TODO)
   ❌ Outdated content detection (TODO)
   ❌ Implicit entity detection (TODO)

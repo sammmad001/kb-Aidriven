@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 
@@ -115,7 +114,6 @@ class TestAnalyzer:
         llm = MockLLMClient()
         llm.chat = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("LLM down"))
         # Make it async
-        import types
 
         async def failing_chat(system, user, json_mode=False):
             raise RuntimeError("LLM down")

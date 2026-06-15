@@ -14,11 +14,11 @@ from app.ingest.preprocess import Preprocessor
 from app.ingest.render import MarkdownRenderer
 from app.llm import LLMClient, get_llm_client
 from app.models import (
-    IngestOptions,
     IngestRequest,
     IngestResult,
     TaskStatus,
     TaskStatusEnum,
+    TokenUsage,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,25 @@ class IngestPipeline:
 
         # In-memory task tracking (upgrade to Redis if needed)
         self._tasks: dict[str, TaskStatus] = {}
+
+    # ------------------------------------------------------------------
+    # Public accessors (avoid direct private attribute access from outside)
+    # ------------------------------------------------------------------
+
+    @property
+    def db(self) -> Neo4jDatabase:
+        """The underlying Neo4j database instance."""
+        return self._db
+
+    @property
+    def llm(self) -> LLMClient | None:
+        """The LLM client, or None before initialize()."""
+        return self._llm
+
+    @property
+    def preprocessor(self) -> Preprocessor | None:
+        """The preprocessor, or None before initialize()."""
+        return self._preprocessor
 
     async def initialize(self) -> None:
         """Initialize all pipeline components."""
@@ -97,9 +116,11 @@ class IngestPipeline:
             # Step 2: Analyze & Classify (LLM call 1)
             t0 = time.monotonic()
             self._tasks[task_id].progress = "analyzing"
+            step2_usage = TokenUsage()
             analysis = await self._analyzer.analyze(
                 raw_content=preprocess_result.content,
                 raw_path=preprocess_result.raw_path,
+                _usage=step2_usage,
             )
             result.analysis = analysis
             timings["analyze"] = round(time.monotonic() - t0, 3)
@@ -123,6 +144,7 @@ class IngestPipeline:
             timings["render"] = round(time.monotonic() - t0, 3)
 
             result.timings = timings
+            result.token_usage = step2_usage
             result.status = TaskStatusEnum.COMPLETED
             self._tasks[task_id] = TaskStatus(
                 task_id=task_id,

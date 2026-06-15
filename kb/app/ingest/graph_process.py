@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -13,7 +12,6 @@ from app.llm import LLMClient
 from app.models import (
     AnalysisReport,
     CompileAction,
-    EntityInfo,
     GraphProcessResult,
     ImplicitRelation,
     ImplicitRelationType,

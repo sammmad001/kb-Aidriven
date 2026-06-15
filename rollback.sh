@@ -15,12 +15,12 @@
 
 set -e
 
-# 配置
-ECS_HOST="43.106.12.79"
-ECS_USER="root"
-ECS_SSH_KEY="$HOME/.ssh/id_ed25519"
+# 配置（可通过环境变量覆盖）
+ECS_HOST="${ECS_HOST:-43.106.12.79}"
+ECS_USER="${ECS_USER:-root}"
+ECS_SSH_KEY="${ECS_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 ECS_APP_DIR="/opt/knowledge-base"
-SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
+SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 
 # 参数解析
 MODE="interactive"

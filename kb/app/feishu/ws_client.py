@@ -105,6 +105,11 @@ class FeishuWsClient:
         logger.info("Feishu WebSocket client stopped")
 
     @property
+    def is_running(self) -> bool:
+        """Whether the client has been started (may be reconnecting)."""
+        return self._running
+
+    @property
     def is_connected(self) -> bool:
         """Whether the WebSocket is actually connected (not just _running flag)."""
         return self._connected and self._running

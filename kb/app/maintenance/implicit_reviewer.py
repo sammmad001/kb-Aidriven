@@ -8,7 +8,6 @@ Runs on a configurable interval via APScheduler. For each edge with confidence <
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -79,6 +78,11 @@ class ImplicitRelationReviewer:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the reviewer scheduler is running."""
+        return self._running
 
     def start(self) -> None:
         """Start the periodic review scheduler."""

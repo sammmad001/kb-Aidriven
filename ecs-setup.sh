@@ -115,15 +115,24 @@ echo ".env 配置完成"
 
 echo ""
 echo "===== [5/5] 配置 systemd 服务 ====="
+
+# Ensure kbuser exists (consistent with deploy-ecs.sh)
+if ! id kbuser &>/dev/null; then
+    useradd -r -s /usr/sbin/nologin -d /opt/knowledge-base kbuser 2>/dev/null || true
+    echo "Created kbuser system user"
+fi
+chown -R kbuser:kbuser /opt/knowledge-base 2>/dev/null || true
+
 ACTUAL_JDK=$(ls -d /opt/tools/zulu21* 2>/dev/null | head -1)
 cat > /etc/systemd/system/knowledge-base.service << SVCEOF
 [Unit]
 Description=Knowledge Base API
-After=network.target
+After=network.target neo4j.service
 
 [Service]
 Type=simple
-User=root
+User=kbuser
+Group=kbuser
 WorkingDirectory=/opt/knowledge-base
 ExecStart=/opt/knowledge-base/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
 Restart=always

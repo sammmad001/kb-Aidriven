@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
     await _ingest_pipeline.initialize()
 
     # Initialize query pipeline (shares the same DB connection)
-    _query_pipeline = QueryPipeline(settings, db=_ingest_pipeline._db)
+    _query_pipeline = QueryPipeline(settings, db=_ingest_pipeline.db)
     await _query_pipeline.initialize()
 
     # Initialize Feishu client
@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI):
         logger.info("Feishu event mode: Webhook (HTTP push) -> POST /webhook/feishu")
 
     # Initialize ingest tracker (Neo4j-based) — must precede init_handlers
-    _ingest_tracker = IngestTracker(_ingest_pipeline._db)
+    _ingest_tracker = IngestTracker(_ingest_pipeline.db)
 
     # Initialize shared handlers (used by both webhook and WebSocket)
     init_handlers(_ingest_pipeline, _feishu_client, _query_pipeline, tracker=_ingest_tracker)
@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Social media services init failed (non-fatal): %s", exc)
 
     # Initialize lint checker
-    lint_checker = LintChecker(_ingest_pipeline._db)
+    lint_checker = LintChecker(_ingest_pipeline.db)
 
     # Initialize ingest retry scheduler
     _ingest_retry_scheduler = IngestRetryScheduler(
@@ -163,8 +163,8 @@ async def lifespan(app: FastAPI):
 
     # V1.1: Initialize ImplicitRelationReviewer for periodic low-confidence edge re-evaluation
     _implicit_reviewer = ImplicitRelationReviewer(
-        db=_ingest_pipeline._db,
-        llm=_ingest_pipeline._llm,
+        db=_ingest_pipeline.db,
+        llm=_ingest_pipeline.llm,
         reasoning_model=settings.dashscope_model_reasoning,
         interval_hours=24,
     )
@@ -174,7 +174,7 @@ async def lifespan(app: FastAPI):
     ingest.set_pipeline(_ingest_pipeline)
     query.set_pipeline(_query_pipeline)
     tasks.set_pipeline(_ingest_pipeline)
-    graph.set_db(_ingest_pipeline._db, lint_checker)
+    graph.set_db(_ingest_pipeline.db, lint_checker)
     ingest_adapters.set_pipeline(_ingest_pipeline)
     ingest_adapters.set_tracker(_ingest_tracker)
     ingest_adapters.set_raw_ingest_dir(settings.raw_ingest_dir)
@@ -199,10 +199,10 @@ async def lifespan(app: FastAPI):
     if _feishu_client:
         await _feishu_client.close()
     if _ingest_pipeline:
-        if _ingest_pipeline._llm:
-            await _ingest_pipeline._llm.close()
-        if _ingest_pipeline._preprocessor:
-            await _ingest_pipeline._preprocessor.close()
+        if _ingest_pipeline.llm:
+            await _ingest_pipeline.llm.close()
+        if _ingest_pipeline.preprocessor:
+            await _ingest_pipeline.preprocessor.close()
         await _ingest_pipeline.shutdown()
     logger.info("Knowledge Base API shut down")
 
@@ -265,8 +265,8 @@ async def health() -> dict:
 
     # Check Neo4j
     try:
-        if _ingest_pipeline and _ingest_pipeline._db:
-            records = await _ingest_pipeline._db.execute_read("RETURN 1 AS ok")
+        if _ingest_pipeline and _ingest_pipeline.db:
+            records = await _ingest_pipeline.db.execute_read("RETURN 1 AS ok")
             components["neo4j"] = "ok" if records else "degraded"
         else:
             components["neo4j"] = "not_initialized"
@@ -285,7 +285,7 @@ async def health() -> dict:
         # WebSocket mode: check connection status
         if _feishu_ws_client and _feishu_ws_client.is_connected:
             components["feishu"] = "ws:connected"
-        elif _feishu_ws_client and _feishu_ws_client._running:
+        elif _feishu_ws_client and _feishu_ws_client.is_running:
             components["feishu"] = "ws:reconnecting"
         elif _feishu_ws_client:
             components["feishu"] = "ws:disconnected"
@@ -307,7 +307,7 @@ async def health() -> dict:
     else:
         components["ingest_scheduler"] = "not_configured"
 
-    if _implicit_reviewer and _implicit_reviewer._running:
+    if _implicit_reviewer and _implicit_reviewer.is_running:
         components["implicit_reviewer"] = "ok"
     else:
         components["implicit_reviewer"] = "not_configured"

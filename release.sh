@@ -89,14 +89,21 @@ if [ -f "CHANGELOG.md" ]; then
   - 部署状态: pending
 "
 
-    # 使用 sed 在 [Unreleased] 段落的开头插入新条目
-    # macOS sed 兼容
+    # 在 [Unreleased] 段落的开头插入新条目（兼容 macOS）
+    # macOS sed 和 GNU sed 对 a\ 命令语法不同，改用临时文件方案
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "/^## \[Unreleased\]/,/^---/{ /^_暂无未发布变更_/{
-            s/^_暂无未发布变更_$//
-            a\\
-${CHANGELOG_ENTRY}
-        }}" CHANGELOG.md
+        # 提取 [Unreleased] 行号
+        UNRELEASED_LINE=$(grep -n "^## \[Unreleased\]" CHANGELOG.md | head -1 | cut -d: -f1)
+        if [ -n "$UNRELEASED_LINE" ]; then
+            # 在 [Unreleased] 标题行之后插入新条目
+            # 清除占位文本
+            sed -i '' '/^_暂无未发布变更_$/d' CHANGELOG.md
+            # 使用 awk 在 [Unreleased] 行之后插入
+            awk -v entry="$CHANGELOG_ENTRY" '
+                /^## \[Unreleased\]/ { print; print ""; print entry; next }
+                { print }
+            ' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+        fi
     else
         sed -i "/^## \[Unreleased\]/,/^---/{ /^_暂无未发布变更_/{
             s/^_暂无未发布变更_$//

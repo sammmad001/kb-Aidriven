@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import logging
 import base64
 
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def verify_signature(
-    verification_token: str,
+    encrypt_key: str,
     timestamp: str,
     nonce: str,
     body: str,
@@ -20,14 +19,15 @@ def verify_signature(
 ) -> bool:
     """Verify Feishu webhook request signature.
 
-    Signature = Base64(SHA256(timestamp + nonce + body))
-    Note: Feishu uses the verification token as part of the signing process.
+    Signature = SHA256(timestamp + nonce + encrypt_key + body) as hex string.
+    Note: Feishu uses the encrypt_key (not verification_token) for signing.
+    The X-Lark-Signature header is compared as a hex digest.
     """
     if not all([timestamp, nonce, body, signature]):
         return False
 
     # Build the string to sign
-    sign_base = f"{timestamp}{nonce}{verification_token}{body}"
+    sign_base = f"{timestamp}{nonce}{encrypt_key}{body}"
     computed = hashlib.sha256(sign_base.encode("utf-8")).hexdigest()
 
     # Compare

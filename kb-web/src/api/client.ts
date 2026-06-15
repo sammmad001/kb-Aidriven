@@ -2,8 +2,15 @@ import type { GraphData, GraphStats, KnowledgeChainReport, NodeDetail, SearchRes
 
 const BASE_URL = '/api';
 
+// Bearer token for API authentication (injected at build or runtime)
+const API_TOKEN = import.meta.env.VITE_API_TOKEN ?? '';
+
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${url}`);
+  const headers: Record<string, string> = {};
+  if (API_TOKEN) {
+    headers['Authorization'] = `Bearer ${API_TOKEN}`;
+  }
+  const res = await fetch(`${BASE_URL}${url}`, { headers });
   if (!res.ok) {
     throw new Error(`API error: ${res.status} ${res.statusText}`);
   }

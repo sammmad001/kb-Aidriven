@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,11 +18,7 @@ from app.models import (
     ImplicitRelationType,
     IngestResult,
     MaterialType,
-    QueryRequest,
-    QueryResult,
-    QueryType,
     RelationInfo,
-    SourceReference,
     TaskStatusEnum,
 )
 
@@ -49,7 +45,7 @@ class MockLLMClient(LLMClient):
         self._default_answer = "RAG（检索增强生成）是一种将检索系统与生成模型结合的技术。"
         self.call_count = 0
 
-    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None) -> str:
+    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: Any = None) -> str:
         self.call_count += 1
         # Route based on system prompt content
         if "分析器" in system or "分析" in system:

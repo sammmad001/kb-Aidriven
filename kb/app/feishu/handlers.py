@@ -315,7 +315,7 @@ async def handle_stats(message_id: str) -> None:
         return
 
     try:
-        records = await _pipeline._db.execute_read(
+        records = await _pipeline.db.execute_read(
             """
             MATCH (n) WHERE n:Entity OR n:Concept
             WITH count(n) AS node_count
@@ -348,7 +348,7 @@ async def handle_search(keyword: str, message_id: str) -> None:
         return
 
     try:
-        results = await _pipeline._db.search_entities(keyword, limit=10)
+        results = await _pipeline.db.search_entities(keyword, limit=10)
         if results:
             items = "\n".join(f"- **{r['name']}**: {r.get('summary', '')}" for r in results)
         else:
@@ -370,7 +370,7 @@ async def handle_recent(message_id: str) -> None:
         return
 
     try:
-        records = await _pipeline._db.execute_read(
+        records = await _pipeline.db.execute_read(
             """
             MATCH (n) WHERE n:Entity OR n:Concept
             RETURN n.name AS name, n.summary AS summary, n.updated_at AS updated

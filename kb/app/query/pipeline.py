@@ -7,7 +7,7 @@ import logging
 from app.config import Settings
 from app.database import Neo4jDatabase
 from app.llm import LLMClient, get_llm_client
-from app.models import QueryRequest, QueryResult, QueryUnderstanding
+from app.models import QueryRequest, QueryResult
 from app.query.generate import AnswerGenerator
 from app.query.retrieve import GraphRetriever
 from app.query.understand import QueryUnderstander
@@ -27,11 +27,25 @@ class QueryPipeline:
         self._generator: AnswerGenerator | None = None
         self._initialized = False
 
+    # ------------------------------------------------------------------
+    # Public accessors (avoid direct private attribute access from outside)
+    # ------------------------------------------------------------------
+
+    @property
+    def db(self) -> Neo4jDatabase:
+        """The underlying Neo4j database instance."""
+        return self._db
+
+    @property
+    def llm(self) -> LLMClient | None:
+        """The LLM client, or None before initialize()."""
+        return self._llm
+
     async def initialize(self) -> None:
         """Initialize all pipeline components."""
         if self._initialized:
             return
-        if not self._db._driver:
+        if not self._db.is_connected:
             await self._db.connect()
         self._llm = get_llm_client(self._settings)
         self._understander = QueryUnderstander(self._db, self._llm, model=self._settings.dashscope_model_analyze)

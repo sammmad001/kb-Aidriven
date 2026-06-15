@@ -16,7 +16,9 @@ if [ -x "$REPO_ROOT/pre-deploy-check.sh" ]; then
         exit 1
     fi
 else
-    echo "⚠️  pre-deploy-check.sh 不存在或不可执行，跳过完整验证"
+    echo "❌ pre-deploy-check.sh 不存在或不可执行，push 已阻止"
+    echo "   请确保 pre-deploy-check.sh 存在且可执行 (chmod +x pre-deploy-check.sh)"
+    exit 1
 fi
 
 echo "✅ pre-push 验证通过，允许推送"

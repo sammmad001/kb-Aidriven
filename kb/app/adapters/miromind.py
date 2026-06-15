@@ -85,7 +85,7 @@ class MiroMindAdapter(KnowledgeAdapter):
                 elif evt_type == "python":
                     code = evt.get("content", "")
                     if code:
-                        markdown_parts.append(f"- 🐍 Python 执行")
+                        markdown_parts.append("- 🐍 Python 执行")
                 elif evt_type == "tool_call":
                     name = evt.get("name", "")
                     markdown_parts.append(f"- 🔧 工具调用: {name}")

@@ -52,7 +52,6 @@ class IngestRetryScheduler:
                 source_id = rec.get("source_id", "")
                 source_type = rec.get("source_type", "")
                 raw_path = rec.get("raw_path", "")
-                retry_count = rec.get("retry_count", 0)
 
                 if not raw_path or not Path(raw_path).exists():
                     logger.warning(

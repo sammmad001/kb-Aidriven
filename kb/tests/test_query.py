@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.models import QueryType, QueryUnderstanding
+from app.models import QueryType
 from app.query.understand import QueryUnderstander, QUERY_SIGNALS
 from app.query.generate import AnswerGenerator
-from app.models import RetrievalResult, QueryRequest
+from app.models import RetrievalResult
 
-from tests.conftest import MockLLMClient, MockNeo4jDatabase
+from tests.conftest import MockLLMClient
 
 
 # ======================================================================

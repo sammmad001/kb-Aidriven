@@ -25,6 +25,11 @@ class Neo4jDatabase:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    @property
+    def is_connected(self) -> bool:
+        """Whether the database driver is initialized and connected."""
+        return self._driver is not None
+
     async def connect(self) -> None:
         """Create the async driver (connection pool)."""
         self._driver = AsyncGraphDatabase.driver(

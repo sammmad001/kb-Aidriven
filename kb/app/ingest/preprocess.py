@@ -132,7 +132,7 @@ class Preprocessor:
     async def _process_image(self, source: str, **kwargs: Any) -> tuple[str, str]:
         """Image: save raw, mark as OCR placeholder."""
         title = kwargs.get("file_name", "image")
-        content = f"[Image uploaded - OCR pending]\n\nImage data stored in raw sources."
+        content = "[Image uploaded - OCR pending]\n\nImage data stored in raw sources."
         # Save the raw image
         try:
             raw_bytes = base64.b64decode(source)
@@ -150,7 +150,7 @@ class Preprocessor:
     async def _process_audio(self, source: str, **kwargs: Any) -> tuple[str, str]:
         """Audio: save raw, mark as Whisper transcription placeholder."""
         title = kwargs.get("file_name", "audio")
-        content = f"[Audio uploaded - Whisper transcription pending]\n\nAudio data stored in raw sources."
+        content = "[Audio uploaded - Whisper transcription pending]\n\nAudio data stored in raw sources."
         try:
             raw_bytes = base64.b64decode(source)
             audio_path = os.path.join(self._raw_dir, f"{datetime.now().strftime('%Y-%m-%d')}-{self._slugify(title)}")
@@ -193,7 +193,6 @@ class Preprocessor:
             with zipfile.ZipFile(io.BytesIO(raw_bytes)) as z:
                 xml_content = z.read("word/document.xml")
             root = ET.fromstring(xml_content)
-            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
             for para in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
                 if para.text:
                     text_parts.append(para.text)

@@ -19,6 +19,10 @@ jobs:
         run: |
           cd kb
           pip install -r requirements.txt
+          pip install ruff
+      - name: Ruff lint check
+        working-directory: kb
+        run: ruff check app/ tests/
       - name: Compile check
         working-directory: kb
         run: find app -name "*.py" -exec python3 -m py_compile {} \;

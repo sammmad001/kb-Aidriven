@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.database import Neo4jDatabase
+
+if TYPE_CHECKING:
+    from app.models import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +102,20 @@ class IngestTracker:
         await self._update_status(source_id, STATUS_PROCESSING)
 
     async def mark_completed(
-        self, source_id: str, kb_task_id: str = ""
+        self, source_id: str, kb_task_id: str = "",
+        token_usage: "TokenUsage | None" = None,
     ) -> None:
-        """Mark record as completed, optionally linking KB task_id."""
+        """Mark record as completed, optionally linking KB task_id.
+
+        V1.2: token_usage is stored on the IngestRecord node for cost tracking.
+        """
+        extra: dict[str, Any] = {"kb_task_id": kb_task_id}
+        if token_usage:
+            extra["prompt_tokens"] = token_usage.prompt_tokens
+            extra["completion_tokens"] = token_usage.completion_tokens
+            extra["total_tokens"] = token_usage.total_tokens
         await self._update_status(
-            source_id, STATUS_COMPLETED, extra={"kb_task_id": kb_task_id}
+            source_id, STATUS_COMPLETED, extra=extra,
         )
         logger.info("IngestRecord completed: %s (task=%s)", source_id, kb_task_id)
 
@@ -168,15 +180,18 @@ class IngestTracker:
         )
         return records
 
-    async def get_stats(self) -> dict[str, int]:
-        """Get aggregate statistics per status."""
+    async def get_stats(self) -> dict[str, Any]:
+        """Get aggregate statistics per status.
+
+        V1.2: Includes token_summary for completed records.
+        """
         records = await self._db.execute_read(
             """
             MATCH (r:IngestRecord)
             RETURN r.status AS status, count(r) AS cnt
             """
         )
-        stats: dict[str, int] = {
+        stats: dict[str, Any] = {
             STATUS_PENDING: 0,
             STATUS_PROCESSING: 0,
             STATUS_COMPLETED: 0,
@@ -188,6 +203,27 @@ class IngestTracker:
             if s in stats:
                 stats[s] = r.get("cnt", 0)
         stats["total"] = sum(stats.values())
+
+        # V1.2: Aggregate token usage across all completed records
+        token_records = await self._db.execute_read(
+            """
+            MATCH (r:IngestRecord)
+            WHERE r.status = 'completed' AND r.total_tokens IS NOT NULL
+            RETURN sum(r.prompt_tokens) AS total_prompt,
+                   sum(r.completion_tokens) AS total_completion,
+                   sum(r.total_tokens) AS total_tokens,
+                   count(r) AS completed_count
+            """
+        )
+        if token_records and token_records[0]:
+            tr = token_records[0]
+            stats["token_summary"] = {
+                "total_prompt_tokens": tr.get("total_prompt", 0) or 0,
+                "total_completion_tokens": tr.get("total_completion", 0) or 0,
+                "total_tokens": tr.get("total_tokens", 0) or 0,
+                "completed_count": tr.get("completed_count", 0) or 0,
+            }
+
         return stats
 
     async def get_record(self, source_id: str) -> dict[str, Any] | None:

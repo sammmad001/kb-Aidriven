@@ -15,12 +15,12 @@
 
 set -e
 
-# 配置
-ECS_HOST="43.106.12.79"
-ECS_USER="root"
-ECS_SSH_KEY="$HOME/.ssh/id_ed25519"
+# 配置（可通过环境变量覆盖）
+ECS_HOST="${ECS_HOST:-43.106.12.79}"
+ECS_USER="${ECS_USER:-root}"
+ECS_SSH_KEY="${ECS_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 ECS_APP_DIR="/opt/knowledge-base"
-SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
+SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 
 # 参数解析
 SKIP_BACKUP=false
@@ -152,7 +152,7 @@ echo ""
 echo -e "${BLUE}[4/8] 上传代码到 ECS${NC}"
 
 # 排除不需要同步的目录
-EXCLUDES="--exclude=__pycache__ --exclude=.pytest_cache --exclude=*.pyc --exclude=.env"
+EXCLUDES="--exclude=__pycache__ --exclude=.pytest_cache --exclude=*.pyc --exclude=.env --exclude=venv --exclude=wiki"
 
 if [ "$DRY_RUN" = true ]; then
     scp_cmd "$KB_DIR/*" "$ECS_USER@$ECS_HOST:$ECS_APP_DIR/"
@@ -160,7 +160,7 @@ else
     echo "  正在同步 kb/ -> ECS:/opt/knowledge-base/ ..."
     rsync -avz --delete $EXCLUDES \
         -e "ssh $SSH_OPTS -i $ECS_SSH_KEY" \
-        "$KB_DIR/" "$ECS_USER@$ECS_APP_DIR/" 2>&1 | tail -5
+        "$KB_DIR/" "$ECS_USER@$ECS_HOST:$ECS_APP_DIR/" 2>&1 | tail -5
     echo -e "  ${GREEN}✓${NC} 代码上传完成"
 fi
 echo ""

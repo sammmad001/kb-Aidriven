@@ -10,11 +10,14 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from app.config import Settings
+
+if TYPE_CHECKING:
+    from app.models import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +26,7 @@ class LLMClient(ABC):
     """Abstract base class for LLM calls."""
 
     @abstractmethod
-    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None) -> str:
+    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
         """Send a chat completion request and return the assistant text.
         
         Args:
@@ -37,9 +40,9 @@ class LLMClient(ABC):
     async def close(self) -> None:
         """Close underlying HTTP client resources."""
 
-    async def chat_json(self, system: str, user: str, model: str | None = None) -> dict[str, Any]:
+    async def chat_json(self, system: str, user: str, model: str | None = None, _usage: "TokenUsage | None" = None) -> dict[str, Any]:
         """Send a chat request asking for JSON output, then parse it."""
-        raw = await self.chat(system, user, json_mode=True, model=model)
+        raw = await self.chat(system, user, json_mode=True, model=model, _usage=_usage)
         return self._parse_json(raw)
 
     @staticmethod
@@ -77,7 +80,7 @@ class OllamaClient(LLMClient):
         self._model = model
         self._client = httpx.AsyncClient(timeout=120.0)
 
-    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None) -> str:
+    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
         effective_model = model or self._model
         payload: dict[str, Any] = {
             "model": effective_model,
@@ -96,6 +99,7 @@ class OllamaClient(LLMClient):
         )
         resp.raise_for_status()
         data = resp.json()
+        # Ollama does not provide token counts; _usage remains as-is
         return data.get("message", {}).get("content", "")
 
     async def close(self) -> None:
@@ -113,7 +117,7 @@ class DashScopeClient(LLMClient):
         self._default_model = model
         self._client = httpx.AsyncClient(timeout=120.0)
 
-    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None) -> str:
+    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
         effective_model = model or self._default_model
         messages = [
             {"role": "system", "content": system},
@@ -137,6 +141,12 @@ class DashScopeClient(LLMClient):
         )
         resp.raise_for_status()
         data = resp.json()
+        # V1.2: Extract token usage from DashScope API response
+        if _usage is not None:
+            u = data.get("usage", {})
+            _usage.prompt_tokens = u.get("prompt_tokens", 0)
+            _usage.completion_tokens = u.get("completion_tokens", 0)
+            _usage.total_tokens = u.get("total_tokens", 0)
         return data["choices"][0]["message"]["content"]
 
     async def close(self) -> None:
@@ -165,8 +175,12 @@ class ResilientLLMClient(LLMClient):
         self._inner = inner
         self._provider = provider
 
-    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None) -> str:
-        """Chat with fallback: try primary model, then fallback tiers on failure."""
+    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
+        """Chat with fallback: try primary model, then fallback tiers on failure.
+
+        V1.2: When _usage is provided, token counts are accumulated across
+        all successful fallback attempts.
+        """
         effective_model = model
         last_error: Exception | None = None
 
@@ -177,12 +191,20 @@ class ResilientLLMClient(LLMClient):
             ]
         else:
             # No fallback for Ollama or when model is not specified
-            return await self._inner.chat(system, user, json_mode, effective_model)
+            return await self._inner.chat(system, user, json_mode, effective_model, _usage=_usage)
+
+        # Accumulator for multi-call token tracking
+        from app.models import TokenUsage
+        acc = TokenUsage() if _usage is not None else None
 
         for tier_model, max_retries, base_backoff in tiers:
             for attempt in range(max_retries + 1):
                 try:
-                    return await self._inner.chat(system, user, json_mode, tier_model)
+                    call_usage = TokenUsage() if _usage is not None else None
+                    result = await self._inner.chat(system, user, json_mode, tier_model, _usage=call_usage)
+                    if acc is not None and call_usage is not None:
+                        acc.add(call_usage)
+                    return result
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                     last_error = exc
                     logger.warning(
@@ -194,6 +216,11 @@ class ResilientLLMClient(LLMClient):
                         await asyncio.sleep(backoff)
                     continue
 
+        # Write accumulated tokens back to caller's _usage before raising
+        if _usage is not None and acc is not None:
+            _usage.prompt_tokens = acc.prompt_tokens
+            _usage.completion_tokens = acc.completion_tokens
+            _usage.total_tokens = acc.total_tokens
         raise RuntimeError(f"All model tiers exhausted: {last_error}") from last_error
 
     async def close(self) -> None:
