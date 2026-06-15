@@ -1,6 +1,6 @@
 #!/bin/bash
 # pre-commit hook: 快速检查（每次 git commit 自动执行）
-# 仅检查暂存的 Python 文件编译 + pytest
+# 检查暂存的 Python 文件编译 + ruff lint + pytest
 set -e
 
 echo "🔍 [pre-commit] 自动验证中..."
@@ -23,7 +23,22 @@ if [ -n "$STAGED_PY" ]; then
     echo "  ✓ Python 编译通过"
 fi
 
-# 2. 检查暂存的 .ts/.tsx 文件编译（前端变更）
+# 2. Ruff lint 检查（仅后端有变更时）
+STAGED_KB=$(git diff --cached --name-only | grep '^kb/' || true)
+if [ -n "$STAGED_KB" ]; then
+    echo "  运行 ruff lint..."
+    cd kb && ruff check app/ tests/ 2>&1
+    EXIT_CODE=$?
+    cd ..
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "❌ ruff lint 检查失败，commit 已阻止"
+        echo "   提示: 运行 'cd kb && ruff check --fix app/ tests/' 自动修复可修复的问题"
+        exit 1
+    fi
+    echo "  ✓ ruff lint 通过"
+fi
+
+# 3. 检查暂存的 .ts/.tsx 文件编译（前端变更）
 STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' || true)
 if [ -n "$STAGED_TS" ]; then
     echo "  检查 TypeScript 编译..."
@@ -37,7 +52,7 @@ if [ -n "$STAGED_TS" ]; then
     echo "  ✓ TypeScript 编译通过"
 fi
 
-# 3. 运行 pytest（仅后端有变更时）
+# 4. 运行 pytest（仅后端有变更时）
 STAGED_KB=$(git diff --cached --name-only | grep '^kb/' || true)
 if [ -n "$STAGED_KB" ]; then
     echo "  运行 pytest..."
