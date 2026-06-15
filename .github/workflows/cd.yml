@@ -52,7 +52,11 @@ jobs:
       - name: Install dependencies
         run: |
           ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
-            "cd /opt/knowledge-base && source venv/bin/activate 2>/dev/null && pip install -r requirements.txt -q 2>/dev/null || true"
+            "cd /opt/knowledge-base && \
+             source venv/bin/activate && \
+             pip install -r requirements.txt -q && \
+             echo '✅ 依赖安装成功' || \
+             (echo '❌ 依赖安装失败，终止部署' && exit 1)"
 
       - name: Restart service
         run: |
