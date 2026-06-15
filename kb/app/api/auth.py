@@ -6,11 +6,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.auth.deps import (
-    _user_store,
-    get_current_user,
-    set_user_store,
-)
+from app.auth import deps as auth_deps
+from app.auth.deps import get_current_user
 from app.auth.jwt import (
     create_access_token,
     create_refresh_token,
@@ -31,9 +28,10 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def _get_store():
-    """Get the global UserStore instance."""
-    assert _user_store is not None, "UserStore not initialized"
-    return _user_store
+    """Get the global UserStore instance (dynamic lookup to avoid stale import)."""
+    store = auth_deps._user_store
+    assert store is not None, "UserStore not initialized"
+    return store
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)

@@ -31,5 +31,5 @@ openai>=1.0
 
 # Multi-user auth & isolation
 python-jose[cryptography]>=3.3
-passlib[bcrypt]>=1.7
+bcrypt>=4.0
 aiosqlite>=0.20
