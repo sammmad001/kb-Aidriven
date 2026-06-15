@@ -54,8 +54,6 @@ async def get_current_user(
 
     Raises 401 if missing, invalid, or user not found.
     """
-    settings = get_settings()
-
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

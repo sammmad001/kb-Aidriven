@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -398,7 +398,6 @@ class TestAuthDependencies:
     async def test_service_token_fallback(self, test_settings):
         """get_current_user_or_service should accept knowledge_api_token."""
         from app.auth.deps import get_current_user_or_service
-        from app.models import CurrentUser
 
         service_creds = MagicMock()
         service_creds.credentials = test_settings.knowledge_api_token
