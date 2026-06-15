@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from app.api.deps import verify_api_token
-from app.models import IngestRequest
+from app.auth.deps import get_current_user_or_service
+from app.models import CurrentUser, IngestRequest
 
 router = APIRouter(prefix="/api", tags=["ingest"])
 
@@ -18,8 +18,12 @@ def set_pipeline(pipeline) -> None:
     _pipeline = pipeline
 
 
-@router.post("/ingest", status_code=202, dependencies=[Depends(verify_api_token)])
-async def create_ingest(request: IngestRequest, bg: BackgroundTasks) -> dict:
+@router.post("/ingest", status_code=202)
+async def create_ingest(
+    request: IngestRequest,
+    bg: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Submit a knowledge ingestion task (async).
 
     Returns immediately with status. Processing happens in background.

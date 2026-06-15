@@ -28,3 +28,8 @@ playwright>=1.48
 
 # V2.1: OCR fallback — DashScope qwen-vl-max (uses OpenAI-compatible SDK)
 openai>=1.0
+
+# Multi-user auth & isolation
+python-jose[cryptography]>=3.3
+passlib[bcrypt]>=1.7
+aiosqlite>=0.20

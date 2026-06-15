@@ -91,7 +91,9 @@ class IngestPipeline:
         # Cleanup stale tasks periodically (ERR-05 / ARCH-03 fix)
         self._cleanup_stale_tasks()
 
-        task_id = uuid4().hex
+        # Generate user-scoped task ID for ownership tracking
+        uid = self._db.get_current_user_id_or_default()
+        task_id = f"{uid}:{uuid4().hex}" if uid else uuid4().hex
         result = IngestResult(task_id=task_id, status=TaskStatusEnum.PROCESSING)
         self._tasks[task_id] = TaskStatus(task_id=task_id, status=TaskStatusEnum.PROCESSING, progress="starting")
         timings: dict[str, float] = {}
@@ -179,7 +181,16 @@ class IngestPipeline:
         return result
 
     def get_task_status(self, task_id: str) -> TaskStatus | None:
-        """Get the status of a running or completed ingest task."""
+        """Get the status of a running or completed ingest task.
+        
+        Verifies task ownership: only the user who created the task can access it.
+        """
+        # Verify task ownership (task_id is prefixed with user_id)
+        uid = self._db.get_current_user_id_or_default()
+        if uid and ":" in task_id:
+            task_uid = task_id.rsplit(":", 1)[0]
+            if task_uid != uid:
+                return None  # Task belongs to a different user
         return self._tasks.get(task_id)
 
     def _cleanup_stale_tasks(self) -> None:

@@ -53,22 +53,24 @@ class LintChecker:
         return report
 
     async def check_orphan_nodes(self) -> list[dict[str, Any]]:
-        """Find nodes with no relationships."""
-        records = await self._db.execute_read(
+        """Find nodes with no relationships (user-scoped)."""
+        records = await self._db.execute_read_for_user(
             """
             MATCH (n) WHERE (n:Entity OR n:Concept) AND NOT (n)--()
+              AND n.user_id = $_user_id
             RETURN n.id AS id, n.name AS name, n.summary AS summary, labels(n) AS labels
             """
         )
         return [dict(r) for r in records]
 
     async def check_duplicate_nodes(self) -> list[dict[str, Any]]:
-        """Find potentially duplicate nodes by name similarity."""
-        records = await self._db.execute_read(
+        """Find potentially duplicate nodes by name similarity (user-scoped)."""
+        records = await self._db.execute_read_for_user(
             """
             MATCH (a), (b)
             WHERE id(a) < id(b)
               AND (a:Entity OR a:Concept) AND (b:Entity OR b:Concept)
+              AND a.user_id = $_user_id AND b.user_id = $_user_id
               AND (a.name CONTAINS b.name OR b.name CONTAINS a.name)
               AND a.name <> b.name
             RETURN a.id AS id_a, a.name AS name_a,
@@ -92,11 +94,12 @@ class LintChecker:
         return groups
 
     async def check_low_confidence_edges(self, threshold: float = 0.3) -> list[dict[str, Any]]:
-        """Find implicit edges with low confidence."""
-        records = await self._db.execute_read(
+        """Find implicit edges with low confidence (user-scoped)."""
+        records = await self._db.execute_read_for_user(
             """
             MATCH (a)-[r:IMPLICIT]->(b)
             WHERE r.confidence < $threshold
+              AND a.user_id = $_user_id AND b.user_id = $_user_id
             RETURN a.id AS from_id, a.name AS from_name,
                    b.id AS to_id, b.name AS to_name,
                    r.type AS rel_type, r.confidence AS confidence, r.evidence AS evidence
@@ -107,27 +110,26 @@ class LintChecker:
         return [dict(r) for r in records]
 
     async def check_broken_relations(self) -> list[dict[str, Any]]:
-        """Check for broken references (edges referencing non-existent nodes)."""
-        # In Neo4j, edges always connect existing nodes, so this checks for
-        # BELONGS_TO edges pointing to non-existent clusters
-        records = await self._db.execute_read(
+        """Check for broken references (user-scoped)."""
+        records = await self._db.execute_read_for_user(
             """
             MATCH (n)-[r:BELONGS_TO]->(c)
-            WHERE NOT EXISTS { MATCH (cl:Cluster) WHERE cl.id = c.id }
+            WHERE NOT EXISTS { MATCH (cl:Cluster) WHERE cl.id = c.id AND cl.user_id = $_user_id }
+              AND n.user_id = $_user_id
             RETURN n.id AS node_id, n.name AS node_name, c.id AS cluster_id
             """
         )
         return [dict(r) for r in records]
 
     async def fix_broken_relations(self, broken: list[dict[str, Any]]) -> int:
-        """Remove broken BELONGS_TO edges."""
+        """Remove broken BELONGS_TO edges (user-scoped)."""
         fixed = 0
         for item in broken:
             try:
-                await self._db.execute_write(
+                await self._db.execute_write_for_user(
                     """
                     MATCH (n)-[r:BELONGS_TO]->()
-                    WHERE n.id = $node_id
+                    WHERE n.id = $node_id AND n.user_id = $_user_id
                     DELETE r
                     """,
                     {"node_id": item["node_id"]},
@@ -148,10 +150,10 @@ class LintChecker:
             keep_id = nodes[0]["id"]
             remove_id = nodes[1]["id"]
             try:
-                await self._db.execute_write(
+                await self._db.execute_write_for_user(
                     """
-                    MATCH (remove) WHERE remove.id = $remove_id
-                    MATCH (kept) WHERE kept.id = $keep_id
+                    MATCH (remove) WHERE remove.id = $remove_id AND remove.user_id = $_user_id
+                    MATCH (kept) WHERE kept.id = $keep_id AND kept.user_id = $_user_id
                     OPTIONAL MATCH (remove)-[r]->(other)
                     WHERE other <> kept
                     WITH remove, kept, collect({type: type(r), target: other}) AS outgoing

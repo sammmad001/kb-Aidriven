@@ -50,3 +50,7 @@ backups/
 # === Qoder IDE ===
 .qoder/**
 !.qoder/rules/
+
+# === Generated images / standalone docs ===
+vibe_images/
+产品介绍.html

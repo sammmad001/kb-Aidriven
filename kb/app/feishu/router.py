@@ -99,7 +99,12 @@ async def _dispatch_encrypted_event(encrypted_data: str) -> dict[str, Any]:
         logger.error("Message has no message_id")
         return {"code": 1, "msg": "no message_id"}
 
-    logger.info("Dispatching message: type=%s, id=%s", msg_type, message_id)
+    # Extract sender open_id for multi-user isolation (V2.0)
+    sender = event.get("sender", {})
+    sender_id = sender.get("sender_id", {})
+    sender_open_id = sender_id.get("open_id", "")
+
+    logger.info("Dispatching message: type=%s, id=%s, sender=%s", msg_type, message_id, sender_open_id[:8] if sender_open_id else "unknown")
 
     # Step 6: Dedup check
     if _dedup.is_duplicate(message_id):
@@ -115,7 +120,7 @@ async def _dispatch_encrypted_event(encrypted_data: str) -> dict[str, Any]:
 
     # Step 8: Dispatch to async handler (fire-and-forget with reference tracking)
     try:
-        task = asyncio.create_task(dispatch_message(msg_type, content, message_id))
+        task = asyncio.create_task(dispatch_message(msg_type, content, message_id, sender_open_id))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
     except Exception as exc:
@@ -199,6 +204,11 @@ async def feishu_webhook(request: Request) -> Response:
         msg_type = message.get("message_type", "")
         message_id = message.get("message_id", "")
 
+        # Extract sender open_id for multi-user isolation (V2.0)
+        sender = event.get("sender", {})
+        sender_id = sender.get("sender_id", {})
+        sender_open_id = sender_id.get("open_id", "")
+
         if message_id:
             logger.info("Plain-text event: type=%s, id=%s", msg_type, message_id)
             if not _dedup.is_duplicate(message_id):
@@ -208,7 +218,7 @@ async def feishu_webhook(request: Request) -> Response:
                 except (json.JSONDecodeError, TypeError):
                     content = {}
                 try:
-                    task = asyncio.create_task(dispatch_message(msg_type, content, message_id))
+                    task = asyncio.create_task(dispatch_message(msg_type, content, message_id, sender_open_id))
                     _background_tasks.add(task)
                     task.add_done_callback(_background_tasks.discard)
                 except Exception as exc:

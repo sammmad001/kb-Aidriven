@@ -21,6 +21,13 @@ class MarkdownRenderer:
         self._wiki_dir = settings.wiki_dir
         os.makedirs(self._wiki_dir, exist_ok=True)
 
+    def _user_wiki_dir(self) -> str:
+        """Get user-scoped wiki directory for file isolation."""
+        uid = self._db.get_current_user_id_or_default()
+        path = os.path.join(self._wiki_dir, uid) if uid else self._wiki_dir
+        os.makedirs(path, exist_ok=True)
+        return path
+
     async def render_affected(self, node_ids: list[str]) -> list[str]:
         """Render all affected nodes and special index files — parallelized."""
         # Parallelize all node renders + index + log
@@ -50,18 +57,18 @@ class MarkdownRenderer:
             return None
 
         # 2. Read relationships
-        explicit_rels = await self._db.execute_read(
+        explicit_rels = await self._db.execute_read_for_user(
             """
-            MATCH (n)-[r:EXPLICIT]->(m) WHERE n.id = $id
+            MATCH (n)-[r:EXPLICIT]->(m) WHERE n.id = $id AND n.user_id = $_user_id
             RETURN r.type AS rel_type, m.name AS target_name, r.context AS context
             ORDER BY r.type
             """,
             {"id": node_id},
         )
 
-        implicit_rels = await self._db.execute_read(
+        implicit_rels = await self._db.execute_read_for_user(
             """
-            MATCH (n)-[r:IMPLICIT]->(m) WHERE n.id = $id
+            MATCH (n)-[r:IMPLICIT]->(m) WHERE n.id = $id AND n.user_id = $_user_id
             RETURN r.type AS rel_type, m.name AS target_name,
                    r.confidence AS confidence, r.evidence AS evidence
             ORDER BY r.confidence DESC
@@ -70,9 +77,10 @@ class MarkdownRenderer:
         )
 
         # Also get incoming relationships
-        incoming_rels = await self._db.execute_read(
+        incoming_rels = await self._db.execute_read_for_user(
             """
             MATCH (m)-[r]->(n) WHERE n.id = $id AND m <> n
+              AND n.user_id = $_user_id AND m.user_id = $_user_id
             RETURN CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS rel_type,
                    m.name AS source_name, type(r) AS edge_label
             ORDER BY rel_type
@@ -132,7 +140,8 @@ class MarkdownRenderer:
 
         # 4. Write file
         label = self._determine_label(node)
-        subdir = os.path.join(self._wiki_dir, label)
+        wiki_base = self._user_wiki_dir()
+        subdir = os.path.join(wiki_base, label)
         os.makedirs(subdir, exist_ok=True)
 
         filename = self._safe_filename(node.get("name", node_id)) + ".md"
@@ -145,8 +154,9 @@ class MarkdownRenderer:
 
     async def render_index(self) -> str:
         """Render the index.md file listing all nodes."""
-        records = await self._db.execute_read(
-            "MATCH (n) WHERE n:Entity OR n:Concept OR n:Comparison "
+        records = await self._db.execute_read_for_user(
+            "MATCH (n) WHERE (n:Entity OR n:Concept OR n:Comparison) "
+            "AND n.user_id = $_user_id "
             "RETURN n.name AS name, n.summary AS summary, labels(n) AS labels, n.updated_at AS updated "
             "ORDER BY n.updated_at DESC"
         )
@@ -162,15 +172,15 @@ class MarkdownRenderer:
                 md += f" — {r['summary']}"
             md += "\n"
 
-        filepath = os.path.join(self._wiki_dir, "index.md")
+        filepath = os.path.join(self._user_wiki_dir(), "index.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md)
         return filepath
 
     async def render_log(self) -> str:
         """Render the log.md file with recent activity."""
-        records = await self._db.execute_read(
-            "MATCH (n) WHERE n:Entity OR n:Concept "
+        records = await self._db.execute_read_for_user(
+            "MATCH (n) WHERE (n:Entity OR n:Concept) AND n.user_id = $_user_id "
             "RETURN n.name AS name, n.created_at AS created, n.updated_at AS updated "
             "ORDER BY n.updated_at DESC LIMIT 30"
         )
@@ -182,7 +192,7 @@ class MarkdownRenderer:
                 updated = updated.isoformat()
             md += f"- **{r['name']}** — updated {updated}\n"
 
-        filepath = os.path.join(self._wiki_dir, "log.md")
+        filepath = os.path.join(self._user_wiki_dir(), "log.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md)
         return filepath

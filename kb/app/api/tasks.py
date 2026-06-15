@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import verify_api_token
-from app.models import TaskStatus
+from app.auth.deps import get_current_user_or_service
+from app.models import CurrentUser, TaskStatus
 
 router = APIRouter(prefix="/api", tags=["tasks"])
 
@@ -17,8 +17,11 @@ def set_pipeline(pipeline) -> None:
     _pipeline = pipeline
 
 
-@router.get("/tasks/{task_id}", response_model=TaskStatus | None, dependencies=[Depends(verify_api_token)])
-async def get_task_status(task_id: str) -> TaskStatus | None:
+@router.get("/tasks/{task_id}", response_model=TaskStatus | None)
+async def get_task_status(
+    task_id: str,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> TaskStatus | None:
     """Get the status of a background ingest task."""
     if _pipeline is None:
         return None

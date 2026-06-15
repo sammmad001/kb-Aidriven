@@ -66,7 +66,7 @@ class IngestTracker:
             }
 
         now = datetime.now(timezone.utc).isoformat()
-        await self._db.execute_write(
+        await self._db.execute_write_for_user(
             """
             CREATE (r:IngestRecord {
                 source_id: $source_id,
@@ -77,6 +77,7 @@ class IngestTracker:
                 retry_count: 0,
                 error_msg: '',
                 raw_path: $raw_path,
+                user_id: $_user_id,
                 created_at: $now,
                 updated_at: $now
             })
@@ -147,11 +148,12 @@ class IngestTracker:
 
     # TODO: used by scheduler or deprecated — currently unused, kept for future dedup integration
     async def is_duplicate(self, content_hash: str) -> bool:
-        """Check if content_hash already exists and was completed."""
-        records = await self._db.execute_read(
+        """Check if content_hash already exists and was completed (user-scoped)."""
+        records = await self._db.execute_read_for_user(
             """
             MATCH (r:IngestRecord)
             WHERE r.content_hash = $hash AND r.status = $completed
+              AND r.user_id = $_user_id
             RETURN r.source_id LIMIT 1
             """,
             {"hash": content_hash, "completed": STATUS_COMPLETED},
@@ -161,7 +163,10 @@ class IngestTracker:
     async def get_failed_records(
         self, limit: int = 10, max_retries: int = MAX_RETRY_COUNT
     ) -> list[dict[str, Any]]:
-        """Get records that need retry: status=failed and retry_count < max."""
+        """Get records that need retry: status=failed and retry_count < max.
+
+        Returns records across ALL users (for background scheduler).
+        """
         records = await self._db.execute_read(
             """
             MATCH (r:IngestRecord)
@@ -172,7 +177,8 @@ class IngestTracker:
                    r.content_hash AS content_hash,
                    r.retry_count AS retry_count,
                    r.raw_path AS raw_path,
-                   r.error_msg AS error_msg
+                   r.error_msg AS error_msg,
+                   r.user_id AS user_id
             ORDER BY r.updated_at ASC
             LIMIT $limit
             """,
@@ -181,13 +187,14 @@ class IngestTracker:
         return records
 
     async def get_stats(self) -> dict[str, Any]:
-        """Get aggregate statistics per status.
+        """Get aggregate statistics per status (user-scoped).
 
         V1.2: Includes token_summary for completed records.
         """
-        records = await self._db.execute_read(
+        records = await self._db.execute_read_for_user(
             """
             MATCH (r:IngestRecord)
+            WHERE r.user_id = $_user_id
             RETURN r.status AS status, count(r) AS cnt
             """
         )
@@ -205,10 +212,11 @@ class IngestTracker:
         stats["total"] = sum(stats.values())
 
         # V1.2: Aggregate token usage across all completed records
-        token_records = await self._db.execute_read(
+        token_records = await self._db.execute_read_for_user(
             """
             MATCH (r:IngestRecord)
             WHERE r.status = 'completed' AND r.total_tokens IS NOT NULL
+              AND r.user_id = $_user_id
             RETURN sum(r.prompt_tokens) AS total_prompt,
                    sum(r.completion_tokens) AS total_completion,
                    sum(r.total_tokens) AS total_tokens,
@@ -235,8 +243,8 @@ class IngestTracker:
     # ------------------------------------------------------------------
 
     async def _get_record(self, source_id: str) -> dict[str, Any] | None:
-        records = await self._db.execute_read(
-            "MATCH (r:IngestRecord {source_id: $source_id}) RETURN r",
+        records = await self._db.execute_read_for_user(
+            "MATCH (r:IngestRecord {source_id: $source_id}) WHERE r.user_id = $_user_id RETURN r",
             {"source_id": source_id},
         )
         if records:
@@ -263,9 +271,10 @@ class IngestTracker:
                 params[f"extra_{key}"] = val
 
         set_str = ", ".join(set_clauses)
-        await self._db.execute_write(
+        await self._db.execute_write_for_user(
             f"""
             MATCH (r:IngestRecord {{source_id: $source_id}})
+            WHERE r.user_id = $_user_id
             SET {set_str}
             """,
             params,

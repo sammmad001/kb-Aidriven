@@ -10,6 +10,8 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app.database import Neo4jDatabase
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,12 +54,16 @@ class IngestRetryScheduler:
                 source_id = rec.get("source_id", "")
                 source_type = rec.get("source_type", "")
                 raw_path = rec.get("raw_path", "")
+                user_id = rec.get("user_id", "")
 
                 if not raw_path or not Path(raw_path).exists():
                     logger.warning(
                         "Cannot retry %s: raw data not found at %s",
                         source_id, raw_path,
                     )
+                    # Set user context for tracker update
+                    if user_id:
+                        Neo4jDatabase.set_current_user(user_id)
                     await self._tracker.mark_failed(
                         source_id,
                         f"raw data not found at {raw_path}",
@@ -70,13 +76,15 @@ class IngestRetryScheduler:
                     )
                 except Exception:
                     logger.exception("Cannot read raw JSON for %s", source_id)
+                    if user_id:
+                        Neo4jDatabase.set_current_user(user_id)
                     await self._tracker.mark_failed(
                         source_id, f"cannot parse raw JSON at {raw_path}"
                     )
                     continue
 
                 # Run adapter transform + pipeline
-                await self._retry_one(source_id, source_type, raw_data)
+                await self._retry_one(source_id, source_type, raw_data, user_id)
 
         except Exception:
             logger.exception("IngestRetryScheduler scan failed")
@@ -86,10 +94,15 @@ class IngestRetryScheduler:
         source_id: str,
         source_type: str,
         raw_data: dict[str, Any],
+        user_id: str = "",
     ) -> None:
         """Retry a single ingest record."""
         from app.adapters.miromind import MiroMindAdapter
         from app.models import IngestRequest
+
+        # Set user context for all user-scoped operations in this retry
+        if user_id:
+            Neo4jDatabase.set_current_user(user_id)
 
         # Map source_type to adapter
         adapter_map: dict[str, Any] = {

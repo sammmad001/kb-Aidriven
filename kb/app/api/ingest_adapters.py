@@ -11,8 +11,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.adapters.miromind import MiroMindAdapter
-from app.api.deps import verify_api_token
-from app.models import IngestRequest, IngestResult
+from app.auth.deps import get_current_user_or_service
+from app.models import CurrentUser, IngestRequest, IngestResult
 from app.services.ingest_tracker import (
     IngestTracker,
     STATUS_COMPLETED,
@@ -70,10 +70,11 @@ class MiroMindMessagePayload(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/miromind", status_code=202, dependencies=[Depends(verify_api_token)])
+@router.post("/miromind", status_code=202)
 async def ingest_miromind(
     payload: MiroMindMessagePayload,
     bg: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
 ) -> dict:
     """Receive a MiroMind research completion event and trigger KB ingestion.
 
@@ -172,8 +173,10 @@ async def ingest_miromind(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/status", dependencies=[Depends(verify_api_token)])
-async def ingest_status() -> dict:
+@router.get("/status")
+async def ingest_status(
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Get aggregate ingest statistics across all channels."""
     if _tracker is None:
         raise HTTPException(status_code=503, detail="Ingest tracker not initialized")
@@ -181,8 +184,11 @@ async def ingest_status() -> dict:
     return {"ok": True, "stats": stats}
 
 
-@router.get("/status/{source_id}", dependencies=[Depends(verify_api_token)])
-async def ingest_source_status(source_id: str) -> dict:
+@router.get("/status/{source_id}")
+async def ingest_source_status(
+    source_id: str,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Get status of a specific ingest record by source_id."""
     if _tracker is None:
         raise HTTPException(status_code=503, detail="Ingest tracker not initialized")
@@ -192,8 +198,10 @@ async def ingest_source_status(source_id: str) -> dict:
     return {"ok": True, "record": record}
 
 
-@router.post("/retry", dependencies=[Depends(verify_api_token)])
-async def ingest_retry_all() -> dict:
+@router.post("/retry")
+async def ingest_retry_all(
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Trigger retry of all failed ingest records (manual override)."""
     if _tracker is None:
         raise HTTPException(status_code=503, detail="Ingest tracker not initialized")
@@ -201,8 +209,12 @@ async def ingest_retry_all() -> dict:
     return {"ok": True, "message": "Use the scheduler or retry individual records"}
 
 
-@router.post("/retry/{source_id}", dependencies=[Depends(verify_api_token)])
-async def ingest_retry_one(source_id: str, bg: BackgroundTasks) -> dict:
+@router.post("/retry/{source_id}")
+async def ingest_retry_one(
+    source_id: str,
+    bg: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Manually retry a single failed ingest record."""
     if _pipeline is None or _tracker is None:
         raise HTTPException(status_code=503, detail="Ingest service not initialized")

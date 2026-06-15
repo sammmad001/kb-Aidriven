@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import Settings
+from app.database import Neo4jDatabase
 from app.models import InputFormat, PreprocessResult
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,13 @@ class Preprocessor:
         self._raw_dir = settings.raw_dir
         self._http = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         os.makedirs(self._raw_dir, exist_ok=True)
+
+    def _user_raw_dir(self) -> str:
+        """Get user-scoped raw directory for file isolation."""
+        uid = Neo4jDatabase.get_current_user_id_or_default()
+        path = os.path.join(self._raw_dir, uid) if uid else self._raw_dir
+        os.makedirs(path, exist_ok=True)
+        return path
 
     async def close(self) -> None:
         """Close the underlying httpx client."""
@@ -136,7 +144,8 @@ class Preprocessor:
         # Save the raw image
         try:
             raw_bytes = base64.b64decode(source)
-            img_path = os.path.join(self._raw_dir, f"{datetime.now().strftime('%Y-%m-%d')}-{self._slugify(title)}")
+            raw_dir = self._user_raw_dir()
+            img_path = os.path.join(raw_dir, f"{datetime.now().strftime('%Y-%m-%d')}-{self._slugify(title)}")
             # Append extension if known
             ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
             mime = kwargs.get("file_mime", "")
@@ -153,7 +162,8 @@ class Preprocessor:
         content = "[Audio uploaded - Whisper transcription pending]\n\nAudio data stored in raw sources."
         try:
             raw_bytes = base64.b64decode(source)
-            audio_path = os.path.join(self._raw_dir, f"{datetime.now().strftime('%Y-%m-%d')}-{self._slugify(title)}")
+            raw_dir = self._user_raw_dir()
+            audio_path = os.path.join(raw_dir, f"{datetime.now().strftime('%Y-%m-%d')}-{self._slugify(title)}")
             with open(audio_path + ".bin", "wb") as f:
                 f.write(raw_bytes)
         except Exception as exc:
@@ -206,16 +216,17 @@ class Preprocessor:
     # ------------------------------------------------------------------
 
     def _save_raw(self, content: str, title: str) -> str:
-        """Save content to raw/sources/ with date-prefixed filename."""
+        """Save content to raw/sources/{user_id}/ with date-prefixed filename."""
+        raw_dir = self._user_raw_dir()
         date_str = datetime.now().strftime("%Y-%m-%d")
         filename = f"{date_str}-{self._slugify(title)}.md"
-        filepath = os.path.join(self._raw_dir, filename)
+        filepath = os.path.join(raw_dir, filename)
 
         # Avoid overwriting
         counter = 1
         while os.path.exists(filepath):
             filename = f"{date_str}-{self._slugify(title)}-{counter}.md"
-            filepath = os.path.join(self._raw_dir, filename)
+            filepath = os.path.join(raw_dir, filename)
             counter += 1
 
         with open(filepath, "w", encoding="utf-8") as f:

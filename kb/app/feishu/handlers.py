@@ -12,6 +12,7 @@ import uuid
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
+from app.database import Neo4jDatabase
 from app.feishu.cards import (
     build_complete_card,
     build_error_card,
@@ -31,6 +32,7 @@ from app.models import (
 )
 
 if TYPE_CHECKING:
+    from app.auth.user_store import UserStore
     from app.services.ingest_tracker import IngestTracker
 
 # Lazy imports for social services (to avoid hard dependency)
@@ -92,6 +94,7 @@ _pipeline: IngestPipeline | None = None
 _feishu_client: FeishuClient | None = None
 _query_pipeline: Any = None
 _tracker: "IngestTracker | None" = None
+_user_store: "UserStore | None" = None
 
 # Social media services (set by init_social_services)
 _social_fetcher: Any = None  # SocialFetcher | None
@@ -103,16 +106,19 @@ def init_handlers(
     feishu_client: FeishuClient,
     query_pipeline: Any,
     tracker: "IngestTracker | None" = None,
+    user_store: "UserStore | None" = None,
 ) -> None:
     """Initialize handler dependencies.
 
     V1.2: tracker enables IngestRecord creation for feishu-channel ingests.
+    V2.0: user_store enables Feishu open_id → kb user_id mapping for multi-user isolation.
     """
-    global _pipeline, _feishu_client, _query_pipeline, _tracker
+    global _pipeline, _feishu_client, _query_pipeline, _tracker, _user_store
     _pipeline = ingest_pipeline
     _feishu_client = feishu_client
     _query_pipeline = query_pipeline
     _tracker = tracker
+    _user_store = user_store
 
 
 def init_social_services(
@@ -129,9 +135,18 @@ def init_social_services(
 # Message Dispatch
 # ======================================================================
 
-async def dispatch_message(msg_type: str, content: dict, message_id: str) -> None:
-    """Route message to appropriate handler based on type."""
+async def dispatch_message(
+    msg_type: str, content: dict, message_id: str, sender_open_id: str = ""
+) -> None:
+    """Route message to appropriate handler based on type.
+
+    V2.0: Resolves Feishu open_id → kb user_id and sets Neo4j context for
+    per-user data isolation before dispatching to handlers.
+    """
     try:
+        # Resolve Feishu sender to kb user and set Neo4j user context
+        await _resolve_sender_context(sender_open_id)
+
         handlers = {
             "text": handle_text,
             "rich_text": handle_rich_text,
@@ -147,6 +162,32 @@ async def dispatch_message(msg_type: str, content: dict, message_id: str) -> Non
     except Exception as exc:
         logger.exception("Message dispatch failed")
         await send_error(message_id, f"处理失败: {exc}")
+
+
+async def _resolve_sender_context(sender_open_id: str) -> None:
+    """Resolve Feishu open_id to kb user_id and set Neo4j ContextVar.
+
+    If user_store is available and open_id is provided, looks up or creates
+    the user mapping. Falls back to default user_id for backward compatibility.
+    """
+    from app.config import get_settings
+
+    if sender_open_id and _user_store:
+        try:
+            user = await _user_store.get_or_create_feishu_user(sender_open_id)
+            if user and user.get("id"):
+                Neo4jDatabase.set_current_user(user["id"])
+                logger.debug(
+                    "Feishu user resolved: open_id=%s... -> user_id=%s",
+                    sender_open_id[:8], user["id"],
+                )
+                return
+        except Exception as exc:
+            logger.warning("Failed to resolve Feishu user %s: %s", sender_open_id[:8], exc)
+
+    # Fallback: use default user_id
+    settings = get_settings()
+    Neo4jDatabase.set_current_user(settings.default_user_id)
 
 
 # ======================================================================
@@ -315,13 +356,13 @@ async def handle_stats(message_id: str) -> None:
         return
 
     try:
-        records = await _pipeline.db.execute_read(
+        records = await _pipeline.db.execute_read_for_user(
             """
-            MATCH (n) WHERE n:Entity OR n:Concept
+            MATCH (n) WHERE (n:Entity OR n:Concept) AND n.user_id = $_user_id
             WITH count(n) AS node_count
-            OPTIONAL MATCH ()-[r]->() 
+            OPTIONAL MATCH (a)-[r]->(b) WHERE a.user_id = $_user_id AND b.user_id = $_user_id
             WITH node_count, count(r) AS edge_count
-            OPTIONAL MATCH ()-[r:IMPLICIT]->()
+            OPTIONAL MATCH (a)-[r:IMPLICIT]->(b) WHERE a.user_id = $_user_id AND b.user_id = $_user_id
             WITH node_count, edge_count, count(r) AS implicit_count
             RETURN node_count, edge_count, implicit_count
             """
@@ -370,9 +411,9 @@ async def handle_recent(message_id: str) -> None:
         return
 
     try:
-        records = await _pipeline.db.execute_read(
+        records = await _pipeline.db.execute_read_for_user(
             """
-            MATCH (n) WHERE n:Entity OR n:Concept
+            MATCH (n) WHERE (n:Entity OR n:Concept) AND n.user_id = $_user_id
             RETURN n.name AS name, n.summary AS summary, n.updated_at AS updated
             ORDER BY n.updated_at DESC LIMIT 10
             """

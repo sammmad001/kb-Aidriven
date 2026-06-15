@@ -169,6 +169,17 @@ class FeishuWsClient:
                 logger.info("Duplicate message_id %s, skipping", message_id)
                 return
 
+            # Extract sender open_id for multi-user isolation (V2.0)
+            sender_open_id = ""
+            try:
+                sender = getattr(data.event, "sender", None)
+                if sender:
+                    sender_id = getattr(sender, "sender_id", None)
+                    if sender_id:
+                        sender_open_id = getattr(sender_id, "open_id", "") or ""
+            except Exception:
+                pass
+
             # Parse content
             content_str = message.content
             try:
@@ -180,7 +191,7 @@ class FeishuWsClient:
             if self._main_loop and self._main_loop.is_running():
                 self._main_loop.call_soon_threadsafe(
                     asyncio.ensure_future,
-                    dispatch_message(msg_type, content, message_id),
+                    dispatch_message(msg_type, content, message_id, sender_open_id),
                 )
             else:
                 logger.warning("Main event loop not available, dropping message %s", message_id)

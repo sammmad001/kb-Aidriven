@@ -11,7 +11,10 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import graph, ingest, ingest_adapters, query, tasks
+from app.api import auth as auth_api, graph, ingest, ingest_adapters, query, tasks
+from app.auth.deps import set_rate_limiter, set_user_store
+from app.auth.rate_limit import UserRateLimiter
+from app.auth.user_store import UserStore
 from app.config import get_settings
 from app.feishu import router as feishu_router
 from app.feishu.client import FeishuClient
@@ -67,6 +70,7 @@ _ingest_retry_scheduler: IngestRetryScheduler | None = None
 _implicit_reviewer: ImplicitRelationReviewer | None = None
 _social_fetcher: Any = None
 _ocr: Any = None
+_user_store: UserStore | None = None
 
 
 @asynccontextmanager
@@ -74,7 +78,7 @@ async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
     global _ingest_pipeline, _query_pipeline, _feishu_client, _feishu_ws_client
     global _ingest_tracker, _ingest_retry_scheduler, _implicit_reviewer
-    global _social_fetcher, _ocr
+    global _social_fetcher, _ocr, _user_store
     settings = get_settings()
 
     # Validate production configuration
@@ -92,6 +96,26 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Running in dev mode — skipping production config validation")
 
+    # Initialize multi-user auth: UserStore + Rate Limiter
+    _user_store = UserStore(settings)
+    await _user_store.initialize()
+    await _user_store.ensure_default_user()
+    if settings.knowledge_api_token:
+        await _user_store.ensure_service_account(settings.default_user_id)
+    set_user_store(_user_store)
+    _rate_limiter = UserRateLimiter()
+    set_rate_limiter(_rate_limiter)
+    logger.info("Multi-user auth initialized: UserStore + RateLimiter")
+
+    # Generate JWT secret if not configured (dev mode only)
+    if not settings.jwt_secret_key:
+        if settings.environment == "production":
+            logger.error("JWT_SECRET_KEY is required in production mode")
+            raise RuntimeError("JWT_SECRET_KEY must be set in production")
+        import secrets as _secrets
+        settings.jwt_secret_key = _secrets.token_hex(32)
+        logger.warning("JWT_SECRET_KEY not set — generated ephemeral dev secret")
+
     # Initialize ingest pipeline
     _ingest_pipeline = IngestPipeline(settings)
     await _ingest_pipeline.initialize()
@@ -99,6 +123,10 @@ async def lifespan(app: FastAPI):
     # Initialize query pipeline (shares the same DB connection)
     _query_pipeline = QueryPipeline(settings, db=_ingest_pipeline.db)
     await _query_pipeline.initialize()
+
+    # Run database migration for multi-user isolation
+    from migrations import run_all as run_migrations
+    await run_migrations(_ingest_pipeline.db, default_user_id=settings.default_user_id)
 
     # Initialize Feishu client
     _feishu_client = FeishuClient(settings)
@@ -115,7 +143,7 @@ async def lifespan(app: FastAPI):
     _ingest_tracker = IngestTracker(_ingest_pipeline.db)
 
     # Initialize shared handlers (used by both webhook and WebSocket)
-    init_handlers(_ingest_pipeline, _feishu_client, _query_pipeline, tracker=_ingest_tracker)
+    init_handlers(_ingest_pipeline, _feishu_client, _query_pipeline, tracker=_ingest_tracker, user_store=_user_store)
 
     # V2.1: Initialize social media fetcher + OCR (optional)
     try:
@@ -204,6 +232,8 @@ async def lifespan(app: FastAPI):
         if _ingest_pipeline.preprocessor:
             await _ingest_pipeline.preprocessor.close()
         await _ingest_pipeline.shutdown()
+    if _user_store:
+        await _user_store.close()
     logger.info("Knowledge Base API shut down")
 
 
@@ -226,6 +256,7 @@ app.add_middleware(
 )
 
 # Register routers
+app.include_router(auth_api.router)
 app.include_router(ingest.router)
 app.include_router(ingest_adapters.router)
 app.include_router(query.router)

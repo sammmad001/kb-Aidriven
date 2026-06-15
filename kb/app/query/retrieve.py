@@ -39,9 +39,9 @@ class GraphRetriever:
         if not entity_ids:
             return RetrievalResult(nodes=[])
 
-        records = await self._db.execute_read(
+        records = await self._db.execute_read_for_user(
             """
-            MATCH (n) WHERE n.id IN $ids OR n.name IN $names
+            MATCH (n) WHERE (n.id IN $ids OR n.name IN $names) AND n.user_id = $_user_id
             RETURN n.id AS id, n.name AS name, n.content AS content,
                    n.summary AS summary, n.tags AS tags
             """,
@@ -65,17 +65,17 @@ class GraphRetriever:
             return RetrievalResult(nodes=[])
 
         # Batch node data
-        node_records = await self._db.execute_read(
-            "MATCH (n) WHERE n.id IN $ids OR n.name IN $names "
+        node_records = await self._db.execute_read_for_user(
+            "MATCH (n) WHERE (n.id IN $ids OR n.name IN $names) AND n.user_id = $_user_id "
             "RETURN n.id AS id, n.name AS name, n.content AS content, n.summary AS summary",
             {"ids": entity_ids, "names": entity_names},
         )
         all_nodes.extend(dict(r) for r in node_records)
 
         # Batch relationships
-        rel_records = await self._db.execute_read(
+        rel_records = await self._db.execute_read_for_user(
             """
-            MATCH (n)-[r]->(m) WHERE n.id IN $ids OR n.name IN $names
+            MATCH (n)-[r]->(m) WHERE (n.id IN $ids OR n.name IN $names) AND n.user_id = $_user_id
             RETURN n.name AS from_name,
                    CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS rel_type,
                    m.name AS to_name, m.summary AS to_summary, m.id AS to_id,
@@ -112,10 +112,11 @@ class GraphRetriever:
 
         # Part 1: Multi-hop paths between entity pairs
         if len(entity_ids) >= 2:
-            path_records = await self._db.execute_read(
+            path_records = await self._db.execute_read_for_user(
                 """
                 MATCH path = (a)-[r*1..3]-(b)
                 WHERE a.id = $from_id AND b.id = $to_id
+                  AND a.user_id = $_user_id AND b.user_id = $_user_id
                 RETURN [node in nodes(path) | {id: node.id, name: node.name, summary: node.summary}] AS path_nodes,
                        [rel in relationships(path) | {
                            from: startNode(rel).name,
@@ -134,8 +135,8 @@ class GraphRetriever:
         # Part 2: Individual node data (batched — PERF-02 fix)
         entity_names = list(understanding.entities)
         if entity_ids:
-            records = await self._db.execute_read(
-                "MATCH (n) WHERE n.id IN $ids OR n.name IN $names "
+            records = await self._db.execute_read_for_user(
+                "MATCH (n) WHERE (n.id IN $ids OR n.name IN $names) AND n.user_id = $_user_id "
                 "RETURN n.id AS id, n.name AS name, n.content AS content, n.summary AS summary",
                 {"ids": entity_ids, "names": entity_names},
             )
@@ -143,10 +144,11 @@ class GraphRetriever:
 
         # Part 3: Bridge entities (nodes connecting different clusters)
         if len(entity_ids) >= 2:
-            bridge_records = await self._db.execute_read(
+            bridge_records = await self._db.execute_read_for_user(
                 """
                 MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id
-                OPTIONAL MATCH (bridge) WHERE bridge.page_rank > 0.05
+                  AND a.user_id = $_user_id AND b.user_id = $_user_id
+                OPTIONAL MATCH (bridge) WHERE bridge.page_rank > 0.05 AND bridge.user_id = $_user_id
                 RETURN DISTINCT bridge.name AS name, bridge.summary AS summary
                 LIMIT 5
                 """,
@@ -174,9 +176,9 @@ class GraphRetriever:
         cluster_info = []
 
         # Get all nodes with cluster info
-        node_records = await self._db.execute_read(
+        node_records = await self._db.execute_read_for_user(
             """
-            MATCH (n) WHERE n:Entity OR n:Concept
+            MATCH (n) WHERE (n:Entity OR n:Concept) AND n.user_id = $_user_id
             RETURN n.id AS id, n.name AS name, n.summary AS summary,
                    n.cluster_id AS cluster_id, n.page_rank AS page_rank
             ORDER BY n.page_rank DESC
@@ -187,17 +189,19 @@ class GraphRetriever:
         all_nodes = [dict(r) for r in node_records]
 
         # Cluster info
-        cluster_records = await self._db.execute_read(
-            "MATCH (c:Cluster) RETURN c.id AS id, c.label AS label, "
+        cluster_records = await self._db.execute_read_for_user(
+            "MATCH (c:Cluster) WHERE c.user_id = $_user_id "
+            "RETURN c.id AS id, c.label AS label, "
             "c.summary AS summary, c.node_count AS node_count",
             {},
         )
         cluster_info = [dict(r) for r in cluster_records]
 
         # All implicit relations
-        implicit_records = await self._db.execute_read(
+        implicit_records = await self._db.execute_read_for_user(
             """
             MATCH (n)-[r:IMPLICIT]->(m)
+            WHERE n.user_id = $_user_id AND m.user_id = $_user_id
             RETURN n.name AS from_name, r.type AS rel_type,
                    r.confidence AS confidence, r.evidence AS evidence, m.name AS to_name
             ORDER BY r.confidence DESC
@@ -220,11 +224,12 @@ class GraphRetriever:
     async def _get_implicit_relations(self, entity_names: list[str]) -> list[dict[str, Any]]:
         """Fetch implicit relations for given entities."""
         entity_ids = [e.replace(" ", "_") for e in entity_names]
-        records = await self._db.execute_read(
+        records = await self._db.execute_read_for_user(
             """
             MATCH (n)-[r:IMPLICIT]->(m)
-            WHERE n.id IN $ids OR m.id IN $ids
-               OR n.name IN $names OR m.name IN $names
+            WHERE (n.id IN $ids OR m.id IN $ids
+               OR n.name IN $names OR m.name IN $names)
+               AND n.user_id = $_user_id AND m.user_id = $_user_id
             RETURN n.name AS from_name, r.type AS rel_type,
                    r.confidence AS confidence, r.evidence AS evidence, m.name AS to_name
             ORDER BY r.confidence DESC

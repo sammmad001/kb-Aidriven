@@ -364,11 +364,12 @@ class GraphProcessor:
         props = action.properties
 
         query = f"""
-        MERGE (n:{action.label} {{id: $id}})
+        MERGE (n:{action.label} {{id: $id, user_id: $_user_id}})
         SET n.name = $name,
             n.content = $content,
             n.summary = $summary,
             n.source = $source,
+            n.user_id = $_user_id,
             n.updated_at = datetime()
         SET n.created_at = CASE WHEN n.created_at IS NULL
                             THEN datetime() ELSE n.created_at END
@@ -400,7 +401,7 @@ class GraphProcessor:
 
         query += "\n        RETURN n.id AS id"
 
-        records = await self._db.execute_write(query, params)
+        records = await self._db.execute_write_for_user(query, params)
         return records[0]["id"] if records else entity_id
 
     # ------------------------------------------------------------------
@@ -456,6 +457,7 @@ class GraphProcessor:
         query = """
         UNWIND $edges AS edge
         MATCH (a), (b) WHERE a.id = edge.from_id AND b.id = edge.to_id
+          AND a.user_id = $_user_id AND b.user_id = $_user_id
         CALL apoc.merge.relationship(a, edge.neo4j_label,
             {type: edge.edge_type}, {},
             b, {}
@@ -465,7 +467,7 @@ class GraphProcessor:
         RETURN edge.from_id + '-[' + edge.edge_type + ']->' + edge.to_id AS edge_id
         """
         try:
-            records = await self._db.execute_write(query, {"edges": edge_data})
+            records = await self._db.execute_write_for_user(query, {"edges": edge_data})
             return [r["edge_id"] for r in records]
         except Exception as exc:
             # Fallback: use MERGE without APOC for environments without APOC
@@ -483,13 +485,14 @@ class GraphProcessor:
         for edge in edge_data:
             query = f"""
             MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id
+              AND a.user_id = $_user_id AND b.user_id = $_user_id
             MERGE (a)-[r:{edge['neo4j_label']} {{type: $edge_type}}]->(b)
             SET r.context = $context,
                 r.created_at = datetime()
             RETURN a.id + '-[' + $edge_type + ']->' + b.id AS edge_id
             """
             try:
-                records = await self._db.execute_write(query, {
+                records = await self._db.execute_write_for_user(query, {
                     "from_id": edge["from_id"],
                     "to_id": edge["to_id"],
                     "edge_type": edge["edge_type"],
@@ -539,11 +542,12 @@ class GraphProcessor:
                 )
 
         # 2. Get 2-hop neighbors with path descriptions
-        two_hop_records = await self._db.execute_read(
+        two_hop_records = await self._db.execute_read_for_user(
             """
             MATCH (n)-[r1]->(m)-[r2]->(o)
             WHERE n.id IN $ids
               AND m.id <> n.id AND o.id <> n.id AND o.id <> m.id
+              AND n.user_id = $_user_id AND m.user_id = $_user_id AND o.user_id = $_user_id
             RETURN DISTINCT
                 n.name AS source_name,
                 COALESCE(r1.type, type(r1)) AS rel1_semantic,
@@ -567,10 +571,10 @@ class GraphProcessor:
                 )
 
         # 3. Bridge entities (high PageRank nodes connecting different areas)
-        bridge_records = await self._db.execute_read(
+        bridge_records = await self._db.execute_read_for_user(
             """
-            MATCH (n) WHERE n.id IN $ids
-            MATCH (b) WHERE b.page_rank > 0.05 AND NOT b.id IN $ids
+            MATCH (n) WHERE n.id IN $ids AND n.user_id = $_user_id
+            MATCH (b) WHERE b.page_rank > 0.05 AND b.user_id = $_user_id AND NOT b.id IN $ids
             MATCH path = (n)-[*1..2]-(b)
             RETURN DISTINCT b.name AS name, b.summary AS summary, b.page_rank AS page_rank
             ORDER BY b.page_rank DESC LIMIT 10
@@ -657,8 +661,9 @@ class GraphProcessor:
             seen_pairs.add(pair)
 
             # Verify both nodes exist
-            node_exists = await self._db.execute_read(
+            node_exists = await self._db.execute_read_for_user(
                 "MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id "
+                "AND a.user_id = $_user_id AND b.user_id = $_user_id "
                 "RETURN a.id AS a_id, b.id AS b_id",
                 {"from_id": from_id, "to_id": to_id},
             )
@@ -667,8 +672,9 @@ class GraphProcessor:
                 continue
 
             # Check no existing EXPLICIT edge already
-            existing = await self._db.execute_read(
+            existing = await self._db.execute_read_for_user(
                 "MATCH (a)-[r:EXPLICIT]->(b) WHERE a.id = $from_id AND b.id = $to_id "
+                "AND a.user_id = $_user_id AND b.user_id = $_user_id "
                 "RETURN count(r) AS cnt",
                 {"from_id": from_id, "to_id": to_id},
             )
@@ -694,13 +700,14 @@ class GraphProcessor:
 
         query = """
         MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id
+          AND a.user_id = $_user_id AND b.user_id = $_user_id
         MERGE (a)-[r:IMPLICIT {type: $edge_type}]->(b)
         SET r.confidence = $confidence,
             r.evidence = $evidence,
             r.discovered_at = datetime()
         """
         try:
-            await self._db.execute_write(query, {
+            await self._db.execute_write_for_user(query, {
                 "from_id": from_id,
                 "to_id": to_id,
                 "edge_type": rel.type.value,
@@ -714,13 +721,14 @@ class GraphProcessor:
         if rel.type in (ImplicitRelationType.TRADE_OFF, ImplicitRelationType.ANALOGOUS_TO):
             reverse_query = """
             MATCH (a), (b) WHERE a.id = $to_id AND b.id = $from_id
+              AND a.user_id = $_user_id AND b.user_id = $_user_id
             MERGE (a)-[r:IMPLICIT {type: $edge_type}]->(b)
             SET r.confidence = $confidence,
                 r.evidence = $evidence,
                 r.discovered_at = datetime()
             """
             try:
-                await self._db.execute_write(reverse_query, {
+                await self._db.execute_write_for_user(reverse_query, {
                     "from_id": from_id,
                     "to_id": to_id,
                     "edge_type": rel.type.value,
@@ -746,7 +754,7 @@ class GraphProcessor:
             return
         query = """
         UNWIND $node_ids AS node_id
-        MATCH (n) WHERE n.id = node_id
+        MATCH (n) WHERE n.id = node_id AND n.user_id = $_user_id
         OPTIONAL MATCH (other)-[r]->(n)
         WITH n, count(r) AS in_degree
         SET n.page_rank = CASE WHEN in_degree > 0
@@ -754,7 +762,7 @@ class GraphProcessor:
                           ELSE 0.01 END
         """
         try:
-            await self._db.execute_write(query, {"node_ids": affected_nodes})
+            await self._db.execute_write_for_user(query, {"node_ids": affected_nodes})
         except Exception as exc:
             logger.warning("Batch PageRank update failed: %s", exc)
 
@@ -764,8 +772,9 @@ class GraphProcessor:
 
     async def _get_related_summary(self, entity_name: str) -> str:
         """Get summary of related nodes for LLM context."""
-        records = await self._db.execute_read(
-            "MATCH (n) WHERE n.name CONTAINS $name OR n.id CONTAINS $name "
+        records = await self._db.execute_read_for_user(
+            "MATCH (n) WHERE (n.name CONTAINS $name OR n.id CONTAINS $name) "
+            "AND n.user_id = $_user_id "
             "RETURN n.name AS name, n.summary AS summary LIMIT 5",
             {"name": entity_name},
         )

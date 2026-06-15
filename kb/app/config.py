@@ -68,6 +68,21 @@ class Settings(BaseSettings):
     social_ocr_paddle_enabled: bool = True  # 是否启用PaddleOCR（免费本地OCR）
     social_ocr_dashscope_key: str = ""   # OCR兜底用的DashScope API Key（为空时仅用PaddleOCR）
 
+    # --- Multi-User Auth ---
+    jwt_secret_key: str = ""             # JWT签名密钥（必填，建议至少32字符）
+    jwt_algorithm: str = "HS256"         # JWT签名算法
+    access_token_expire_minutes: int = 15  # Access Token有效期（分钟）
+    refresh_token_expire_days: int = 7   # Refresh Token有效期（天）
+    user_db_path: str = "data/users.db" # SQLite用户数据库路径
+    default_user_id: str = "default"    # 迁移归属用户ID
+
+    # --- Task Scheduling ---
+    ingest_concurrency: int = 3          # 同时执行的ingest任务上限
+    query_concurrency: int = 10          # 同时执行的查询上限
+    llm_concurrency: int = 5             # 同时调用的LLM API上限
+    task_queue_max_per_user: int = 3     # 每用户最大排队任务数
+    task_queue_max_size: int = 100       # 全局队列最大长度
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

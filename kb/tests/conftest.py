@@ -156,6 +156,36 @@ class MockNeo4jDatabase:
             return []
         return []
 
+    # ------------------------------------------------------------------
+    # User-scoped query helpers (delegate to base methods for testing)
+    # ------------------------------------------------------------------
+
+    async def execute_read_for_user(self, query: str, params: dict | None = None) -> list[dict]:
+        """Mock user-scoped read — injects _user_id and delegates to execute_read."""
+        params = params or {}
+        params["_user_id"] = self.get_current_user_id()
+        return await self.execute_read(query, params)
+
+    async def execute_write_for_user(self, query: str, params: dict | None = None) -> list[dict]:
+        """Mock user-scoped write — injects _user_id and delegates to execute_write."""
+        params = params or {}
+        params["_user_id"] = self.get_current_user_id()
+        return await self.execute_write(query, params)
+
+    @staticmethod
+    def set_current_user(user_id: str) -> None:
+        """No-op for mock."""
+        pass
+
+    @staticmethod
+    def get_current_user_id() -> str:
+        """Return a default user_id for mock."""
+        return "test_user"
+
+    @staticmethod
+    def get_current_user_id_or_default() -> str:
+        return "test_user"
+
     async def get_node_by_id(self, node_id: str) -> dict | None:
         return self._nodes.get(node_id)
 

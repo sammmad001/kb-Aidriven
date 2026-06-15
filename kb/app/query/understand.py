@@ -147,10 +147,11 @@ class QueryUnderstander:
         where_clause = " OR ".join(clauses)
 
         # Batch search: single Cypher query with dynamic clauses
-        records = await self._db.execute_read(
+        records = await self._db.execute_read_for_user(
             f"""
             MATCH (n)
             WHERE (n:Entity OR n:Concept)
+              AND n.user_id = $_user_id
               AND ({where_clause})
             RETURN n.id AS id, n.name AS name
             LIMIT 10

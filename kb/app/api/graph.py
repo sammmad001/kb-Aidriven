@@ -7,8 +7,9 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.deps import verify_api_token
+from app.auth.deps import get_current_user_or_service
 from app.models import (
+    CurrentUser,
     GraphStats,
     KnowledgeChainReport,
     LintReport,
@@ -32,47 +33,81 @@ def set_db(db, lint_checker=None) -> None:
     _lint_checker = lint_checker
 
 
-@router.get("/graph/stats", response_model=GraphStats, dependencies=[Depends(verify_api_token)])
-async def get_graph_stats() -> GraphStats:
+@router.get("/graph/stats", response_model=GraphStats)
+async def get_graph_stats(
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> GraphStats:
     """Get knowledge graph statistics."""
     if _db is None:
         return GraphStats()
 
     try:
-        records = await _db.execute_read(
+        # Node count
+        node_records = await _db.execute_read_for_user(
             """
-            MATCH (n) WHERE n:Entity OR n:Concept
-            WITH count(n) AS node_count
-            OPTIONAL MATCH ()-[r]->()
-            WITH node_count, count(r) AS edge_count
-            OPTIONAL MATCH ()-[r:IMPLICIT]->()
-            WITH node_count, edge_count, count(r) AS implicit_count
-            OPTIONAL MATCH (e:Entity)
-            WITH node_count, edge_count, implicit_count, count(e) AS entity_count
-            OPTIONAL MATCH (c:Concept)
-            WITH node_count, edge_count, implicit_count, entity_count, count(c) AS concept_count
-            OPTIONAL MATCH (cl:Cluster)
-            RETURN node_count, edge_count, implicit_count, entity_count, concept_count, count(cl) AS cluster_count
+            MATCH (n) WHERE (n:Entity OR n:Concept) AND n.user_id = $_user_id
+            RETURN count(n) AS node_count
             """
         )
-        if records:
-            r = records[0]
-            return GraphStats(
-                node_count=r.get("node_count", 0),
-                edge_count=r.get("edge_count", 0),
-                implicit_edge_count=r.get("implicit_count", 0),
-                entity_count=r.get("entity_count", 0),
-                concept_count=r.get("concept_count", 0),
-                cluster_count=r.get("cluster_count", 0),
-            )
+        node_count = node_records[0]["node_count"] if node_records else 0
+
+        # Edge count
+        edge_records = await _db.execute_read_for_user(
+            """
+            MATCH (a)-[r]->(b)
+            WHERE a.user_id = $_user_id
+            RETURN count(r) AS edge_count
+            """
+        )
+        edge_count = edge_records[0]["edge_count"] if edge_records else 0
+
+        # Implicit edge count
+        implicit_records = await _db.execute_read_for_user(
+            """
+            MATCH (a)-[r:IMPLICIT]->(b)
+            WHERE a.user_id = $_user_id
+            RETURN count(r) AS implicit_count
+            """
+        )
+        implicit_count = implicit_records[0]["implicit_count"] if implicit_records else 0
+
+        # Entity count
+        entity_records = await _db.execute_read_for_user(
+            "MATCH (e:Entity) WHERE e.user_id = $_user_id RETURN count(e) AS cnt"
+        )
+        entity_count = entity_records[0]["cnt"] if entity_records else 0
+
+        # Concept count
+        concept_records = await _db.execute_read_for_user(
+            "MATCH (c:Concept) WHERE c.user_id = $_user_id RETURN count(c) AS cnt"
+        )
+        concept_count = concept_records[0]["cnt"] if concept_records else 0
+
+        # Cluster count
+        cluster_records = await _db.execute_read_for_user(
+            "MATCH (cl:Cluster) WHERE cl.user_id = $_user_id RETURN count(cl) AS cnt"
+        )
+        cluster_count = cluster_records[0]["cnt"] if cluster_records else 0
+
+        return GraphStats(
+            node_count=node_count,
+            edge_count=edge_count,
+            implicit_edge_count=implicit_count,
+            entity_count=entity_count,
+            concept_count=concept_count,
+            cluster_count=cluster_count,
+        )
     except Exception as exc:
         logger.warning("Failed to fetch graph stats: %s", exc)
 
     return GraphStats()
 
 
-@router.get("/graph/data", dependencies=[Depends(verify_api_token)])
-async def get_graph_data(limit: int = Query(500, le=2000, description="Max nodes to return")) -> dict:
+@router.get("/graph/data")
+async def get_graph_data(
+    limit: int = Query(500, le=2000, description="Max nodes to return"),
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Get graph data in vis-network format for visualization."""
     if _db is None:
         return {"nodes": [], "edges": []}
@@ -81,9 +116,10 @@ async def get_graph_data(limit: int = Query(500, le=2000, description="Max nodes
     edges = []
 
     # Fetch nodes (with type for shape mapping)
-    node_records = await _db.execute_read(
+    node_records = await _db.execute_read_for_user(
         """
-        MATCH (n) WHERE n:Entity OR n:Concept OR n:Comparison
+        MATCH (n)
+        WHERE (n:Entity OR n:Concept OR n:Comparison) AND n.user_id = $_user_id
         RETURN n.id AS id, n.name AS label, n.summary AS title,
                n.cluster_id AS `group`, n.page_rank AS value,
                CASE
@@ -109,10 +145,11 @@ async def get_graph_data(limit: int = Query(500, le=2000, description="Max nodes
     # Fetch edges between returned nodes only (bounded)
     node_ids = [n["id"] for n in nodes]
     if node_ids:
-        edge_records = await _db.execute_read(
+        edge_records = await _db.execute_read_for_user(
             """
             MATCH (a)-[r]->(b)
             WHERE a.id IN $node_ids AND b.id IN $node_ids
+              AND a.user_id = $_user_id
             RETURN a.id AS from, b.id AS to,
                    CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS label,
                    r.confidence AS confidence,
@@ -137,8 +174,12 @@ async def get_graph_data(limit: int = Query(500, le=2000, description="Max nodes
     return {"nodes": nodes, "edges": edges}
 
 
-@router.get("/graph/neighbors/{entity_id}", dependencies=[Depends(verify_api_token)])
-async def get_neighbors(entity_id: str, depth: int = 1) -> dict:
+@router.get("/graph/neighbors/{entity_id}")
+async def get_neighbors(
+    entity_id: str,
+    depth: int = 1,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Get N-hop neighborhood of an entity."""
     if _db is None:
         return {"nodes": [], "edges": []}
@@ -152,10 +193,10 @@ async def get_neighbors(entity_id: str, depth: int = 1) -> dict:
         nodes.append({"id": entity_id, "label": target.get("name", entity_id)})
 
     # Get neighbors
-    records = await _db.execute_read(
+    records = await _db.execute_read_for_user(
         """
         MATCH (a)-[r*1..2]-(b)
-        WHERE a.id = $id
+        WHERE a.id = $id AND b.user_id = $_user_id
         RETURN DISTINCT b.id AS id, b.name AS name, b.summary AS summary,
                labels(b) AS labels
         LIMIT 20
@@ -168,10 +209,11 @@ async def get_neighbors(entity_id: str, depth: int = 1) -> dict:
     # Get edges between these nodes
     node_ids = [n["id"] for n in nodes]
     if node_ids:
-        edge_records = await _db.execute_read(
+        edge_records = await _db.execute_read_for_user(
             """
             MATCH (a)-[r]->(b)
             WHERE a.id IN $ids AND b.id IN $ids
+              AND a.user_id = $_user_id
             RETURN a.id AS from, b.id AS to,
                    CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS label
             """,
@@ -183,16 +225,21 @@ async def get_neighbors(entity_id: str, depth: int = 1) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-@router.get("/graph/path", dependencies=[Depends(verify_api_token)])
-async def get_path(from_id: str, to_id: str) -> dict:
+@router.get("/graph/path")
+async def get_path(
+    from_id: str,
+    to_id: str,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Find shortest path between two entities."""
     if _db is None:
         return {"path": []}
 
-    records = await _db.execute_read(
+    records = await _db.execute_read_for_user(
         """
         MATCH path = shortestPath((a)-[*..6]-(b))
         WHERE a.id = $from_id AND b.id = $to_id
+          AND a.user_id = $_user_id AND b.user_id = $_user_id
         RETURN [node in nodes(path) | {id: node.id, name: node.name}] AS nodes,
                [rel in relationships(path) | {
                    from: startNode(rel).name,
@@ -209,8 +256,10 @@ async def get_path(from_id: str, to_id: str) -> dict:
     return {"nodes": [], "edges": []}
 
 
-@router.post("/lint", response_model=LintReport, dependencies=[Depends(verify_api_token)])
-async def run_lint() -> LintReport:
+@router.post("/lint", response_model=LintReport)
+async def run_lint(
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> LintReport:
     """Execute quality check on the knowledge graph."""
     if _lint_checker is None:
         return LintReport()
@@ -222,16 +271,20 @@ async def run_lint() -> LintReport:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/graph/search", dependencies=[Depends(verify_api_token)])
-async def search_entities(q: str = Query(..., min_length=1)) -> dict:
+@router.get("/graph/search")
+async def search_entities(
+    q: str = Query(..., min_length=1),
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> dict:
     """Search entities by keyword (name or summary)."""
     if _db is None:
         return {"results": []}
 
-    records = await _db.execute_read(
+    records = await _db.execute_read_for_user(
         """
         MATCH (n)
         WHERE (n:Entity OR n:Concept OR n:Comparison)
+          AND n.user_id = $_user_id
           AND (n.name CONTAINS $kw OR n.summary CONTAINS $kw)
         RETURN n.id AS id, n.name AS name, n.summary AS summary,
                n.cluster_id AS cluster_id, n.page_rank AS page_rank,
@@ -269,16 +322,19 @@ def _to_iso(dt) -> str | None:
     return str(dt)
 
 
-@router.get("/graph/node/{node_id}", response_model=NodeDetail, dependencies=[Depends(verify_api_token)])
-async def get_node_detail(node_id: str) -> NodeDetail:
+@router.get("/graph/node/{node_id}", response_model=NodeDetail)
+async def get_node_detail(
+    node_id: str,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> NodeDetail:
     """Get full detail of a single node."""
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not connected")
 
     # Get node data
-    records = await _db.execute_read(
+    records = await _db.execute_read_for_user(
         """
-        MATCH (n) WHERE n.id = $id
+        MATCH (n) WHERE n.id = $id AND n.user_id = $_user_id
         RETURN n.id AS id, n.name AS name, n.summary AS summary,
                n.content AS content, n.tags AS tags,
                n.page_rank AS page_rank, n.cluster_id AS cluster_id,
@@ -296,9 +352,9 @@ async def get_node_detail(node_id: str) -> NodeDetail:
 
     r = records[0]
     # Get degree counts
-    degree_records = await _db.execute_read(
+    degree_records = await _db.execute_read_for_user(
         """
-        MATCH (n) WHERE n.id = $id
+        MATCH (n) WHERE n.id = $id AND n.user_id = $_user_id
         OPTIONAL MATCH (n)-[r_out]->() WITH count(r_out) AS out_deg
         OPTIONAL MATCH ()-[r_in]->(n) WITH out_deg, count(r_in) AS in_deg
         RETURN out_deg, in_deg
@@ -312,9 +368,9 @@ async def get_node_detail(node_id: str) -> NodeDetail:
         out_degree = degree_records[0].get("out_deg", 0)
 
     # Get relations
-    rel_records = await _db.execute_read(
+    rel_records = await _db.execute_read_for_user(
         """
-        MATCH (a)-[r]->(b) WHERE a.id = $id
+        MATCH (a)-[r]->(b) WHERE a.id = $id AND a.user_id = $_user_id
         RETURN a.id AS source_id, a.name AS source_name,
                b.id AS target_id, b.name AS target_name,
                CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS rel_type,
@@ -322,7 +378,7 @@ async def get_node_detail(node_id: str) -> NodeDetail:
                r.confidence AS confidence, r.evidence AS evidence,
                'outgoing' AS direction
         UNION
-        MATCH (a)-[r]->(b) WHERE b.id = $id
+        MATCH (a)-[r]->(b) WHERE b.id = $id AND b.user_id = $_user_id
         RETURN a.id AS source_id, a.name AS source_name,
                b.id AS target_id, b.name AS target_name,
                CASE WHEN r.type IS NOT NULL THEN r.type ELSE type(r) END AS rel_type,
@@ -363,8 +419,11 @@ async def get_node_detail(node_id: str) -> NodeDetail:
     )
 
 
-@router.get("/graph/node-report/{node_id}", response_model=KnowledgeChainReport, dependencies=[Depends(verify_api_token)])
-async def get_node_report(node_id: str) -> KnowledgeChainReport:
+@router.get("/graph/node-report/{node_id}", response_model=KnowledgeChainReport)
+async def get_node_report(
+    node_id: str,
+    current_user: CurrentUser = Depends(get_current_user_or_service),
+) -> KnowledgeChainReport:
     """Generate a complete knowledge chain report for a node."""
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not connected")
@@ -377,10 +436,12 @@ async def get_node_report(node_id: str) -> KnowledgeChainReport:
     implicit_rels = [r for r in node_detail.relations if r.rel_type == "IMPLICIT"]
 
     # 3. Multi-hop paths (2-3 hops)
-    multi_hop_records = await _db.execute_read(
+    multi_hop_records = await _db.execute_read_for_user(
         """
         MATCH path = (a)-[*2..3]-(b)
-        WHERE a.id = $id AND (b:Entity OR b:Concept OR b:Comparison)
+        WHERE a.id = $id AND a.user_id = $_user_id
+          AND (b:Entity OR b:Concept OR b:Comparison)
+          AND b.user_id = $_user_id
         RETURN b.id AS target_id, b.name AS target_name,
                length(path) AS hop_count,
                [n IN nodes(path) | n.name] AS path_nodes,
@@ -405,11 +466,12 @@ async def get_node_report(node_id: str) -> KnowledgeChainReport:
     # 4. Cluster info
     cluster_info = None
     if node_detail.cluster_id:
-        cluster_records = await _db.execute_read(
+        cluster_records = await _db.execute_read_for_user(
             """
             MATCH (n) WHERE n.cluster_id = $cid AND (n:Entity OR n:Concept OR n:Comparison)
+              AND n.user_id = $_user_id
             WITH count(n) AS node_count
-            OPTIONAL MATCH (c:Cluster) WHERE c.id = $cid
+            OPTIONAL MATCH (c:Cluster) WHERE c.id = $cid AND c.user_id = $_user_id
             RETURN $cid AS cluster_id, c.label AS label, node_count, c.summary AS summary
             """,
             {"cid": node_detail.cluster_id},
@@ -424,17 +486,19 @@ async def get_node_report(node_id: str) -> KnowledgeChainReport:
             )
 
     # 5. Metrics
-    total_nodes_records = await _db.execute_read(
-        "MATCH (n) WHERE n:Entity OR n:Concept OR n:Comparison RETURN count(n) AS total"
+    total_nodes_records = await _db.execute_read_for_user(
+        "MATCH (n) WHERE (n:Entity OR n:Concept OR n:Comparison) AND n.user_id = $_user_id RETURN count(n) AS total"
     )
     total_nodes = total_nodes_records[0]["total"] if total_nodes_records else 1
     rank_percent = round((1 - node_detail.page_rank) * 100, 1) if node_detail.page_rank else 0
 
     # Bridge clusters
-    bridge_records = await _db.execute_read(
+    bridge_records = await _db.execute_read_for_user(
         """
         MATCH (n)-[r]-(m)
-        WHERE n.id = $id AND (m:Entity OR m:Concept OR m:Comparison)
+        WHERE n.id = $id AND n.user_id = $_user_id
+          AND (m:Entity OR m:Concept OR m:Comparison)
+          AND m.user_id = $_user_id
         RETURN DISTINCT m.cluster_id AS cid
         """,
         {"id": node_id},

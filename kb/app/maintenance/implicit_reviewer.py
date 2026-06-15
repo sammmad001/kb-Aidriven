@@ -121,6 +121,11 @@ class ImplicitRelationReviewer:
 
             for edge in edges:
                 try:
+                    # Set user context for this edge's owner
+                    edge_user_id = edge.get("user_id", "")
+                    if edge_user_id:
+                        Neo4jDatabase.set_current_user(edge_user_id)
+
                     result = await self._reevaluate_edge(edge)
                     reviewed += 1
 
@@ -152,7 +157,11 @@ class ImplicitRelationReviewer:
     # ------------------------------------------------------------------
 
     async def _fetch_low_confidence_edges(self) -> list[dict[str, Any]]:
-        """Fetch implicit edges with confidence below threshold, ordered by age."""
+        """Fetch implicit edges with confidence below threshold, ordered by age.
+
+        Returns edges across ALL users (background maintenance).
+        Each edge dict includes user_id for context switching.
+        """
         min_age = datetime.now(timezone.utc).timestamp() - self.MIN_AGE_SECONDS
         records = await self._db.execute_read(
             """
@@ -163,7 +172,8 @@ class ImplicitRelationReviewer:
             RETURN a.id AS from_id, a.name AS from_name, a.summary AS from_summary,
                    b.id AS to_id, b.name AS to_name, b.summary AS to_summary,
                    r.type AS rel_type, r.confidence AS confidence,
-                   r.evidence AS evidence, r.discovered_at AS discovered_at
+                   r.evidence AS evidence, r.discovered_at AS discovered_at,
+                   coalesce(a.user_id, '') AS user_id
             ORDER BY r.confidence ASC
             LIMIT $limit
             """,
@@ -222,10 +232,12 @@ class ImplicitRelationReviewer:
     async def _gather_3hop_context(self, from_id: str, to_id: str) -> str:
         """Gather 3-hop graph context around both endpoints for richer review."""
         try:
-            records = await self._db.execute_read(
+            records = await self._db.execute_read_for_user(
                 """
                 MATCH path = (a)-[*1..3]-(m)
                 WHERE a.id IN [$from_id, $to_id]
+                  AND a.user_id = $_user_id
+                  AND m.user_id = $_user_id
                   AND m.id <> a.id
                 RETURN DISTINCT
                     a.name AS source_name,
@@ -264,11 +276,12 @@ class ImplicitRelationReviewer:
     # ------------------------------------------------------------------
 
     async def _update_edge(self, edge: dict[str, Any], result: dict[str, Any]) -> None:
-        """Update confidence and evidence for a reviewed edge."""
-        await self._db.execute_write(
+        """Update confidence and evidence for a reviewed edge (user-scoped)."""
+        await self._db.execute_write_for_user(
             """
             MATCH (a)-[r:IMPLICIT {type: $rel_type}]->(b)
             WHERE a.id = $from_id AND b.id = $to_id
+              AND a.user_id = $_user_id AND b.user_id = $_user_id
             SET r.confidence = $confidence,
                 r.evidence = $evidence,
                 r.reviewed_at = datetime(),
@@ -285,11 +298,12 @@ class ImplicitRelationReviewer:
         )
 
     async def _remove_edge(self, edge: dict[str, Any]) -> None:
-        """Remove an edge that failed re-evaluation."""
-        await self._db.execute_write(
+        """Remove an edge that failed re-evaluation (user-scoped)."""
+        await self._db.execute_write_for_user(
             """
             MATCH (a)-[r:IMPLICIT {type: $rel_type}]->(b)
             WHERE a.id = $from_id AND b.id = $to_id
+              AND a.user_id = $_user_id AND b.user_id = $_user_id
             DELETE r
             """,
             {

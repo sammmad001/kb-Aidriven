@@ -1,9 +1,16 @@
-"""API authentication dependency."""
+"""API authentication dependency (DEPRECATED — use app.auth.deps instead).
+
+This module is kept for backward compatibility but should not be used
+in new code. All endpoints should migrate to the new authentication
+system in app.auth.deps which supports multi-user JWT + service account
+authentication with rate limiting.
+"""
 
 from __future__ import annotations
 
 import hmac
 import logging
+import warnings
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -18,11 +25,19 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 async def verify_api_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> str:
-    """Verify the Bearer token against the configured API token.
+    """Verify the Bearer token against the configured API token. (DEPRECATED)
+
+    .. deprecated::
+        Use ``app.auth.deps.get_current_user_or_service`` instead.
 
     Returns the token string if valid.
     Raises 401 if missing or invalid.
     """
+    warnings.warn(
+        "verify_api_token is deprecated. Use app.auth.deps instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     settings = get_settings()
     expected = settings.knowledge_api_token
 

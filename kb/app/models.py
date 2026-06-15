@@ -463,6 +463,42 @@ class ClusterBrief(BaseModel):
     summary: str = ""
 
 
+# ---------------------------------------------------------------------------
+# User Auth Models
+# ---------------------------------------------------------------------------
+
+class UserCreate(BaseModel):
+    """Registration request body."""
+    username: str = Field(..., min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_\-]+$")
+    password: str = Field(..., min_length=6, max_length=100)
+
+
+class UserLogin(BaseModel):
+    """Login request body."""
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    """JWT token response for login/refresh."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = 900  # Access token validity in seconds
+
+
+class RefreshRequest(BaseModel):
+    """Refresh token request body."""
+    refresh_token: str
+
+
+class CurrentUser(BaseModel):
+    """Authenticated user info (passed through dependency injection)."""
+    id: str          # Internal user ID (e.g. "usr_abc123")
+    username: str    # Display username
+    is_service: bool = False  # True for service account (knowledge_api_token)
+
+
 class KnowledgeChainReport(BaseModel):
     """Complete knowledge chain report for a node."""
     node: NodeDetail
