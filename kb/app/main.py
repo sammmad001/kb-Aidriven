@@ -323,10 +323,17 @@ if os.path.isdir(_UI_DIST):
             app.mount(f"/ui/{_static_file}", StaticFiles(directory=_UI_DIST), name=f"ui-{_static_file}")
 
     # SPA fallback: /ui and all /ui/* non-API routes serve index.html
+    # Cache-Control: no-store ensures browsers always fetch the latest HTML
+    # (hashed JS/CSS assets under /ui/assets/ are safe to cache long-term)
+    _SPA_HEADERS = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
     @app.get("/ui", include_in_schema=False)
     @app.get("/ui/", include_in_schema=False)
     async def serve_spa() -> FileResponse:
-        return FileResponse(os.path.join(_UI_DIST, "index.html"))
+        return FileResponse(
+            os.path.join(_UI_DIST, "index.html"),
+            headers=_SPA_HEADERS,
+        )
 
     # Catch-all for SPA sub-routes (e.g. /ui/search, /ui/graph)
     # Must be registered LAST so it doesn't shadow /ui/assets/* etc.
@@ -337,7 +344,10 @@ if os.path.isdir(_UI_DIST):
         if full_path and os.path.isfile(_requested):
             return FileResponse(_requested)
         # Otherwise return index.html for client-side routing
-        return FileResponse(os.path.join(_UI_DIST, "index.html"))
+        return FileResponse(
+            os.path.join(_UI_DIST, "index.html"),
+            headers=_SPA_HEADERS,
+        )
 
     logger.info("Frontend UI mounted at /ui (dist=%s)", _UI_DIST)
 else:

@@ -55,18 +55,26 @@ async function fetchJson<T>(url: string, options?: FetchOptions): Promise<T> {
   let token = getAuthToken();
   let res = await fetch(`${BASE_URL}${url}`, doFetch(token));
 
-  // Auto-refresh on 401
-  if (res.status === 401 && token) {
-    const newToken = await refreshAccessToken();
-    if (newToken) {
-      token = newToken;
-      res = await fetch(`${BASE_URL}${url}`, doFetch(token));
+  // Handle 401: try refresh if we have a token, otherwise redirect to login
+  if (res.status === 401) {
+    if (token) {
+      // Token might be expired — try refreshing
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        token = newToken;
+        res = await fetch(`${BASE_URL}${url}`, doFetch(token));
+      } else {
+        // Refresh failed — clear tokens and redirect to login
+        localStorage.removeItem(ACCESS_KEY);
+        localStorage.removeItem(REFRESH_KEY);
+        window.location.reload();
+        throw new Error('Session expired');
+      }
     } else {
-      // Refresh failed — clear tokens and redirect to login
-      localStorage.removeItem(ACCESS_KEY);
-      localStorage.removeItem(REFRESH_KEY);
-      window.location.reload();
-      throw new Error('Session expired');
+      // No token at all — shouldn't happen (ProtectedRoute guards this),
+      // but as a safety net, redirect to login
+      window.location.href = '/ui/login';
+      throw new Error('Not authenticated');
     }
   }
 
