@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import auth as auth_api, graph, ingest, ingest_adapters, query, tasks
 from app.auth.deps import set_rate_limiter, set_user_store
@@ -286,6 +289,59 @@ app.include_router(query.router)
 app.include_router(tasks.router)
 app.include_router(graph.router)
 app.include_router(feishu_router.router)
+
+
+# ---------------------------------------------------------------------------
+# Frontend static files (SPA)
+# ---------------------------------------------------------------------------
+
+# Frontend dist lookup: check multiple candidate locations
+_UI_DIST = os.environ.get("UI_DIST_PATH", "")
+if not _UI_DIST or not os.path.isdir(_UI_DIST):
+    _app_dir = os.path.dirname(os.path.abspath(__file__))
+    for _candidate in [
+        os.path.join(_app_dir, "..", "kb-web", "dist"),          # ECS: /opt/knowledge-base/kb-web/dist
+        os.path.join(_app_dir, "..", "..", "kb-web", "dist"),    # Local dev: project-root/kb-web/dist
+    ]:
+        _candidate = os.path.normpath(_candidate)
+        if os.path.isdir(_candidate):
+            _UI_DIST = _candidate
+            break
+    else:
+        _UI_DIST = os.path.normpath(os.path.join(_app_dir, "..", "kb-web", "dist"))
+
+if os.path.isdir(_UI_DIST):
+    # Mount static assets (JS, CSS, images) at /ui/assets/
+    _assets_dir = os.path.join(_UI_DIST, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/ui/assets", StaticFiles(directory=_assets_dir), name="ui-assets")
+
+    # Serve other static files at /ui/ (favicon, icons, etc.)
+    for _static_file in ("favicon.svg", "icons.svg"):
+        _file_path = os.path.join(_UI_DIST, _static_file)
+        if os.path.isfile(_file_path):
+            app.mount(f"/ui/{_static_file}", StaticFiles(directory=_UI_DIST), name=f"ui-{_static_file}")
+
+    # SPA fallback: /ui and all /ui/* non-API routes serve index.html
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/", include_in_schema=False)
+    async def serve_spa() -> FileResponse:
+        return FileResponse(os.path.join(_UI_DIST, "index.html"))
+
+    # Catch-all for SPA sub-routes (e.g. /ui/search, /ui/graph)
+    # Must be registered LAST so it doesn't shadow /ui/assets/* etc.
+    @app.get("/ui/{full_path:path}", include_in_schema=False)
+    async def serve_spa_sub(full_path: str) -> FileResponse:
+        # If the request matches a real file in dist, serve it directly
+        _requested = os.path.join(_UI_DIST, full_path)
+        if full_path and os.path.isfile(_requested):
+            return FileResponse(_requested)
+        # Otherwise return index.html for client-side routing
+        return FileResponse(os.path.join(_UI_DIST, "index.html"))
+
+    logger.info("Frontend UI mounted at /ui (dist=%s)", _UI_DIST)
+else:
+    logger.warning("Frontend dist not found at %s — UI will not be available", _UI_DIST)
 
 
 # ---------------------------------------------------------------------------

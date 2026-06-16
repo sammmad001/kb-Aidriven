@@ -192,6 +192,39 @@ class SocialFetcher:
             )
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    async def _resolve_short_url(self, url: str, cookies: list[dict] | None = None) -> str | None:
+        """Resolve a short URL (e.g., xhslink.com) to its final destination.
+
+        Uses httpx to follow redirects without spinning up a browser page.
+        Returns the final URL string, or None if resolution fails.
+        """
+        try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            }
+            if cookies:
+                cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+                headers["Cookie"] = cookie_str
+            async with httpx.AsyncClient(
+                timeout=10, follow_redirects=True, max_redirects=5
+            ) as client:
+                resp = await client.get(url, headers=headers)
+                final_url = str(resp.url)
+                if final_url and final_url != url:
+                    logger.info("Short URL resolved: %s → %s", url, final_url)
+                    return final_url
+        except Exception as exc:
+            logger.debug("Short URL resolution failed for %s: %s", url, exc)
+        return None
+
+    # ------------------------------------------------------------------
     # Xiaohongshu
     # ------------------------------------------------------------------
 
@@ -203,6 +236,13 @@ class SocialFetcher:
             content.fetch_status = FetchStatus.FAILED
             content.error = "Browser not started"
             return content
+
+        # Pre-resolve xhslink.com short URLs via httpx (avoids browser redirect loops)
+        if "xhslink.com" in url:
+            resolved = await self._resolve_short_url(url, self._cookies_xhs)
+            if resolved:
+                url = resolved
+                content.url = url
 
         # Set domain on cookies
         cookies = [{**c, "domain": ".xiaohongshu.com"} for c in self._cookies_xhs]
@@ -222,7 +262,44 @@ class SocialFetcher:
                 await context.add_cookies(cookies)
 
             page = await context.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=self._fetch_timeout)
+
+            # Track navigations to detect redirect loops early
+            nav_count = 0
+
+            def _on_nav(frame: Any) -> None:
+                nonlocal nav_count
+                if frame == page.main_frame:
+                    nav_count += 1
+
+            page.on("framenavigated", _on_nav)
+
+            # Use domcontentloaded instead of networkidle — XHS heavy JS often
+            # prevents networkidle from triggering, causing timeouts.
+            try:
+                await page.goto(
+                    url, wait_until="domcontentloaded", timeout=self._fetch_timeout
+                )
+            except Exception as nav_exc:
+                err_msg = str(nav_exc).lower()
+                if "redirect" in err_msg or nav_count > 10:
+                    content.fetch_status = FetchStatus.FAILED
+                    content.error = (
+                        "redirect loop detected — "
+                        "XHS cookie may be expired. "
+                        "Please update SOCIAL_XHS_COOKIE in .env"
+                    )
+                    return content
+                raise
+
+            # Redirect loop guard: if we bounced too many times without landing
+            if nav_count > 10:
+                content.fetch_status = FetchStatus.FAILED
+                content.error = (
+                    "redirect loop detected — "
+                    "XHS cookie may be expired. "
+                    "Please update SOCIAL_XHS_COOKIE in .env"
+                )
+                return content
 
             # Wait for the note content to render
             try:

@@ -9,6 +9,12 @@
 ## [Unreleased]
 
 ### fix
+- mount frontend dist on FastAPI + CD pipeline frontend build + XHS redirect loop guard ([v1.1.6])
+  - 发布时间: 2026-06-16
+  - 优先级: P0
+  - 部署状态: pending
+
+### fix
 - fix social URL detection in handle_text for plain-text shares ([v1.1.5])
   - 发布时间: 2026-06-16
   - 优先级: P1

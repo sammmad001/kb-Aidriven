@@ -49,6 +49,13 @@ jobs:
             -e "ssh -o ConnectTimeout=10" \
             kb/ ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/
 
+      - name: Build and upload frontend
+        run: |
+          cd kb-web && npm ci && npm run build
+          rsync -avz --delete \
+            -e "ssh -o ConnectTimeout=10" \
+            dist/ ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/kb-web/dist/
+
       - name: Install dependencies
         run: |
           ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
