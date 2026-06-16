@@ -250,6 +250,14 @@ async def handle_text(content: dict, message_id: str) -> None:
     elif cmd == "help":
         await handle_help(message_id)
     else:
+        # Social media URL detection (小红书/微博): route to social pipeline
+        # before intent detection — covers plain-text shares from mobile apps
+        if _social_fetcher and SOCIAL_FETCHER_AVAILABLE and detect_social_url:
+            platform, social_url = detect_social_url(text)
+            if platform:
+                await _handle_social_url(social_url, platform, message_id)
+                return
+
         # Intent auto-detection: classify as query or input
         user_id = Neo4jDatabase.get_current_user_id_or_default()
         has_ctx = _context.has_active_context(user_id) if _context else False

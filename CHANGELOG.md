@@ -9,6 +9,12 @@
 ## [Unreleased]
 
 ### fix
+- fix social URL detection in handle_text for plain-text shares ([v1.1.5])
+  - 发布时间: 2026-06-16
+  - 优先级: P1
+  - 部署状态: pending
+
+### fix
 - 修复对话上下文时间戳碰撞+消息顺序错乱+研究测试mock ([v1.1.4])
   - 发布时间: 2026-06-16
   - 优先级: P0
