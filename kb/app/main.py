@@ -18,7 +18,7 @@ from app.auth.user_store import UserStore
 from app.config import get_settings
 from app.feishu import router as feishu_router
 from app.feishu.client import FeishuClient
-from app.feishu.handlers import init_handlers, init_social_services
+from app.feishu.handlers import init_handlers, init_social_services, init_intent_context, init_research_service
 from app.feishu.ws_client import FeishuWsClient
 from app.ingest.pipeline import IngestPipeline
 from app.lint.checker import LintChecker
@@ -144,6 +144,29 @@ async def lifespan(app: FastAPI):
 
     # Initialize shared handlers (used by both webhook and WebSocket)
     init_handlers(_ingest_pipeline, _feishu_client, _query_pipeline, tracker=_ingest_tracker, user_store=_user_store)
+
+    # V2.2: Initialize intent detection + conversation context
+    from app.feishu.intent import IntentDetector
+    from app.feishu.context import ConversationContext
+
+    _intent_detector = IntentDetector(
+        llm=_ingest_pipeline.llm,
+        llm_model=settings.dashscope_model_analyze,  # qwen-turbo for fast classification
+        llm_timeout=2.0,
+    )
+    _conversation_context = ConversationContext(max_turns=5, ttl_seconds=600)
+    init_intent_context(_intent_detector, _conversation_context)
+    logger.info("Intent detection + conversation context initialized")
+
+    # V2.3: Initialize MiroMind deep research client
+    from app.services.miromind_client import MiroMindClient
+
+    _miromind_client = MiroMindClient()
+    if _miromind_client.is_configured:
+        init_research_service(_miromind_client)
+        logger.info("MiroMind deep research client initialized")
+    else:
+        logger.info("MiroMind API key not set — /research command disabled")
 
     # V2.1: Initialize social media fetcher + OCR (optional)
     try:

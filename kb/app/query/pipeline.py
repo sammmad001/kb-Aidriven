@@ -73,6 +73,7 @@ class QueryPipeline:
                 question=request.question,
                 retrieval=retrieval,
                 query_type=understanding.query_type,
+                context_history=request.context_history,
             )
 
             return result

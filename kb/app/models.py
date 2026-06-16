@@ -339,6 +339,7 @@ class IngestResult(BaseModel):
 class QueryRequest(BaseModel):
     """API request body for knowledge query."""
     question: str = Field(..., max_length=5000)
+    context_history: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class QueryUnderstanding(BaseModel):

@@ -267,15 +267,20 @@ def build_help_card() -> dict:
             _md(
                 "**知识输入** (直接发送消息):\n"
                 "- 发送文本、图片、文件、链接\n"
-                "- 系统自动分析、分类、存入知识图谱\n\n"
+                "- 系统自动分析、分类、存入知识图谱\n"
+                "- 疑问句自动识别为查询，无需手动加 /q\n\n"
                 "**知识查询**:\n"
                 "- `/q RAG是什么` — 事实查询\n"
                 "- `/q RAG和知识图谱的关系` — 关联查询\n"
-                "- `/q 为什么选择Graph-First架构` — 推理查询\n\n"
+                "- `/q 为什么选择Graph-First架构` — 推理查询\n"
+                "- 或直接发送问题（系统自动识别）\n\n"
+                "**深度研究**:\n"
+                "- `/research 量子计算最新进展` — 触发 MiroMind 深度研究并自动入库\n\n"
                 "**其他命令**:\n"
                 "- `/stats` — 知识库统计\n"
                 "- `/search 关键词` — 搜索节点\n"
-                "- `/recent` — 最近记录\n"
+                "- `/recent [数量] [类型] [时间]` — 最近记录\n"
+                "- `/end` — 清空对话上下文\n"
                 "- `/help` — 显示此帮助"
             ),
         ],
@@ -293,6 +298,86 @@ QUERY_CARD_BUILDERS = {
 
 
 def build_query_card(query_result: QueryResult) -> dict:
-    """Build the appropriate card based on query type."""
+    """Build the appropriate card based on query type, with follow-up hint."""
     builder = QUERY_CARD_BUILDERS.get(query_result.query_type, build_factual_result_card)
-    return builder(query_result)
+    card = builder(query_result)
+    # Append follow-up hint to encourage natural conversation
+    card["elements"].append(_hr())
+    card["elements"].append(_md("💡 _可直接追问，如「它的缺点是什么？」_"))
+    return card
+
+
+def build_recent_card(records: list[dict]) -> dict:
+    """Build an enhanced /recent card with grouping, relative time, and type labels.
+
+    Args:
+        records: List of dicts with keys: name, summary, updated, labels (optional).
+    """
+    if not records:
+        return _card(
+            "recent", "📝 最近更新",
+            [_md("知识库暂无内容")],
+            header_color="blue",
+        )
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+
+    items: list[str] = []
+    for r in records:
+        name = r.get("name", "?")
+        summary = r.get("summary", "")
+        labels = r.get("labels", [])
+        updated = r.get("updated", "")
+
+        # Relative time
+        time_str = ""
+        if updated:
+            try:
+                # Parse Neo4j datetime string or ISO format
+                if hasattr(updated, "isoformat"):
+                    dt = updated
+                elif isinstance(updated, str):
+                    dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                else:
+                    dt = None
+                if dt:
+                    diff = now - dt if dt.tzinfo else now.replace(tzinfo=None) - dt
+                    days = diff.days
+                    if days == 0:
+                        time_str = "今天"
+                    elif days == 1:
+                        time_str = "昨天"
+                    elif days < 7:
+                        time_str = f"{days}天前"
+                    elif days < 30:
+                        time_str = f"{days // 7}周前"
+                    else:
+                        time_str = f"{days // 30}月前"
+            except Exception:
+                time_str = ""
+
+        # Type label
+        type_tag = ""
+        if labels:
+            if "Entity" in labels:
+                type_tag = "📌 "
+            elif "Concept" in labels:
+                type_tag = "💡 "
+            elif "Comparison" in labels:
+                type_tag = "⚖️ "
+
+        # Truncate summary
+        if summary:
+            summary = summary[:80] + ("..." if len(summary) > 80 else "")
+            items.append(f"- {type_tag}**{name}** ({time_str})\n  {summary}")
+        else:
+            items.append(f"- {type_tag}**{name}** ({time_str})")
+
+    elements = [
+        _md("\n".join(items)),
+        _hr(),
+        _md(f"共 **{len(records)}** 条记录"),
+    ]
+
+    return _card("recent", "📝 最近更新", elements, header_color="blue")

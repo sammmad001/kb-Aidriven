@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     task_queue_max_per_user: int = 3     # 每用户最大排队任务数
     task_queue_max_size: int = 100       # 全局队列最大长度
 
+    # --- MiroMind Deep Research ---
+    miromind_api_base: str = "https://api.miromind.ai/v1"
+    miromind_api_key: str = ""
+    miromind_default_model: str = "mirothinker-1-7-deepresearch"
+    miromind_request_timeout: float = 300.0
+    miromind_auto_ingest: bool = True
+    miromind_min_tokens: int = 500
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -66,3 +66,113 @@ body {
   max-width: 280px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
+
+/* Q&A Answer Markdown rendering */
+.qa-answer h1,
+.qa-answer h2,
+.qa-answer h3 {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
+
+.qa-answer h1 { font-size: 1.25em; }
+.qa-answer h2 { font-size: 1.15em; }
+.qa-answer h3 { font-size: 1.05em; }
+
+.qa-answer p {
+  margin: 0.5em 0;
+  line-height: 1.7;
+}
+
+.qa-answer ul,
+.qa-answer ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.qa-answer li {
+  margin: 0.25em 0;
+  line-height: 1.6;
+}
+
+.qa-answer ul li::marker {
+  color: var(--accent-cyan);
+}
+
+.qa-answer ol li::marker {
+  color: var(--accent-cyan);
+}
+
+.qa-answer code {
+  background: var(--bg-tertiary);
+  color: var(--accent-cyan);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.875em;
+  font-family: 'Fira Code', 'Consolas', monospace;
+}
+
+.qa-answer pre {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+
+.qa-answer pre code {
+  background: none;
+  color: var(--text-primary);
+  padding: 0;
+  border-radius: 0;
+}
+
+.qa-answer blockquote {
+  border-left: 3px solid var(--accent-purple);
+  padding-left: 1em;
+  margin: 0.75em 0;
+  color: var(--text-secondary);
+}
+
+.qa-answer strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.qa-answer a {
+  color: var(--accent-cyan);
+  text-decoration: none;
+}
+
+.qa-answer a:hover {
+  text-decoration: underline;
+}
+
+.qa-answer table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.875em;
+}
+
+.qa-answer th,
+.qa-answer td {
+  border: 1px solid var(--border-color);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+
+.qa-answer th {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.qa-answer hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 1em 0;
+}

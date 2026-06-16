@@ -91,3 +91,43 @@ export interface GraphStats {
   concept_count: number;
   implicit_edge_count: number;
 }
+
+// =====================================================================
+// Q&A Types (matching backend QueryResult model)
+// =====================================================================
+
+export interface QueryRequest {
+  question: string;
+}
+
+export type QueryType = 'factual' | 'relational' | 'reasoning' | 'global';
+
+export interface SourceReference {
+  node_id: string;
+  node_name: string;
+  relevance: number;
+}
+
+export interface ImplicitRelationResult {
+  source: string;
+  target: string;
+  type: string;
+  confidence: number;
+  evidence: string;
+}
+
+export interface QueryResult {
+  answer: string;
+  sources: SourceReference[];
+  implicit_relations_used: ImplicitRelationResult[];
+  confidence: number;
+  query_type: QueryType;
+  depth: number;
+}
+
+export interface QueryHistoryItem {
+  question: string;
+  answer: string;
+  query_type: QueryType;
+  timestamp: number;
+}

@@ -5,6 +5,7 @@ import { IMPLICIT_TYPE_COLORS } from '../graph/graphStyles';
 
 interface KnowledgeReportProps {
   report: KnowledgeChainReport;
+  onNodeClick?: (nodeId: string) => void;
 }
 
 function Section({ title, count, children, defaultOpen = true }: {
@@ -30,16 +31,29 @@ function Section({ title, count, children, defaultOpen = true }: {
   );
 }
 
-function RelationRow({ rel }: { rel: RelationDetail; focusNodeId: string }) {
+function RelationRow({ rel, onNodeClick }: {
+  rel: RelationDetail;
+  onNodeClick?: (nodeId: string) => void;
+}) {
   const isOutgoing = rel.direction === 'outgoing';
   const otherName = isOutgoing ? rel.target_name : rel.source_name;
+  const otherId = isOutgoing ? rel.target_id : rel.source_id;
   const isImplicit = rel.rel_type === 'IMPLICIT';
   const typeColor = rel.implicit_type ? IMPLICIT_TYPE_COLORS[rel.implicit_type] : '#64748b';
 
   return (
     <div className="flex items-start gap-2 py-1.5 text-xs">
       <span className="text-[#64748b] shrink-0">{isOutgoing ? '→' : '←'}</span>
-      <span className="text-[#e2e8f0] font-medium">{otherName}</span>
+      {onNodeClick ? (
+        <button
+          onClick={() => onNodeClick(otherId)}
+          className="text-[#06b6d4] hover:underline font-medium"
+        >
+          {otherName}
+        </button>
+      ) : (
+        <span className="text-[#e2e8f0] font-medium">{otherName}</span>
+      )}
       {isImplicit ? (
         <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ backgroundColor: `${typeColor}20`, color: typeColor }}>
           {rel.implicit_type} {rel.confidence ? `${(rel.confidence * 100).toFixed(0)}%` : ''}
@@ -54,11 +68,20 @@ function RelationRow({ rel }: { rel: RelationDetail; focusNodeId: string }) {
   );
 }
 
-function MultiHopRow({ path }: { path: MultiHopPath }) {
+function MultiHopRow({ path, onNodeClick }: { path: MultiHopPath; onNodeClick?: (nodeId: string) => void }) {
   return (
     <div className="py-1.5 text-xs">
       <div className="flex items-center gap-2">
-        <span className="text-[#e2e8f0] font-medium">{path.target_name}</span>
+        {onNodeClick ? (
+          <button
+            onClick={() => onNodeClick(path.target_id)}
+            className="text-[#06b6d4] hover:underline font-medium"
+          >
+            {path.target_name}
+          </button>
+        ) : (
+          <span className="text-[#e2e8f0] font-medium">{path.target_name}</span>
+        )}
         <span className="text-[#64748b]">{path.hop_count} 跳</span>
       </div>
       <div className="text-[#64748b] mt-0.5 truncate">
@@ -69,7 +92,7 @@ function MultiHopRow({ path }: { path: MultiHopPath }) {
   );
 }
 
-export default function KnowledgeReport({ report }: KnowledgeReportProps) {
+export default function KnowledgeReport({ report, onNodeClick }: KnowledgeReportProps) {
   const { node, direct_relations, multi_hop_paths, implicit_relations, cluster_info, metrics } = report;
 
   return (
@@ -127,7 +150,7 @@ export default function KnowledgeReport({ report }: KnowledgeReportProps) {
         ) : (
           <div className="max-h-[200px] overflow-y-auto">
             {direct_relations.map((rel, i) => (
-              <RelationRow key={i} rel={rel} focusNodeId={node.id} />
+              <RelationRow key={i} rel={rel} onNodeClick={onNodeClick} />
             ))}
           </div>
         )}
@@ -140,7 +163,7 @@ export default function KnowledgeReport({ report }: KnowledgeReportProps) {
         ) : (
           <div className="max-h-[200px] overflow-y-auto">
             {multi_hop_paths.slice(0, 15).map((path, i) => (
-              <MultiHopRow key={i} path={path} />
+              <MultiHopRow key={i} path={path} onNodeClick={onNodeClick} />
             ))}
           </div>
         )}
@@ -153,7 +176,7 @@ export default function KnowledgeReport({ report }: KnowledgeReportProps) {
         ) : (
           <div className="max-h-[200px] overflow-y-auto">
             {implicit_relations.map((rel, i) => (
-              <RelationRow key={i} rel={rel} focusNodeId={node.id} />
+              <RelationRow key={i} rel={rel} onNodeClick={onNodeClick} />
             ))}
           </div>
         )}

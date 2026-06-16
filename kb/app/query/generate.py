@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app.llm import LLMClient
 from app.models import (
@@ -23,7 +24,8 @@ ANSWER_SYSTEM_PROMPT = """你是一个个人知识库的智能助手。请基于
 2. 引用来源：在关键论断后标注 [来源: 节点名]
 3. 区分确定事实和推理结论
 4. 对于隐式关系线索，说明这是系统推理发现的关系，标注置信度
-5. 如果检索结果不足以回答问题，坦诚说明"""
+5. 如果检索结果不足以回答问题，坦诚说明
+6. 如果提供了对话历史，结合上下文理解用户追问的意图"""
 
 
 class AnswerGenerator:
@@ -38,6 +40,7 @@ class AnswerGenerator:
         question: str,
         retrieval: RetrievalResult,
         query_type: QueryType = QueryType.FACTUAL,
+        context_history: list[dict[str, Any]] | None = None,
     ) -> QueryResult:
         """Generate a structured answer based on retrieval results."""
         # Special case: factual with direct content → no LLM needed
@@ -58,7 +61,7 @@ class AnswerGenerator:
                 )
 
         # Build user prompt with retrieval context
-        user_prompt = self._build_prompt(question, retrieval)
+        user_prompt = self._build_prompt(question, retrieval, context_history)
 
         # Call LLM
         try:
@@ -101,9 +104,29 @@ class AnswerGenerator:
             depth=len(retrieval.explicit_paths) + len(retrieval.implicit_relations),
         )
 
-    def _build_prompt(self, question: str, retrieval: RetrievalResult) -> str:
+    def _build_prompt(
+        self,
+        question: str,
+        retrieval: RetrievalResult,
+        context_history: list[dict[str, Any]] | None = None,
+    ) -> str:
         """Build the user prompt with retrieval context."""
         parts = [f"【用户问题】\n{question}\n"]
+
+        # Include conversation history for follow-up context
+        if context_history:
+            history_lines: list[str] = []
+            for msg in context_history[-6:]:  # last 3 turns (6 messages)
+                role = msg.get("role", "")
+                content = msg.get("content", "")[:300]
+                if role == "user":
+                    history_lines.append(f"  用户: {content}")
+                elif role == "assistant":
+                    history_lines.append(f"  助手: {content}")
+            if history_lines:
+                parts.append("【对话历史】")
+                parts.extend(history_lines)
+                parts.append("")
 
         if retrieval.nodes:
             parts.append("【检索到的知识节点】")

@@ -18,9 +18,13 @@ from app.feishu.cards import (
     build_error_card,
     build_help_card,
     build_query_card,
+    build_recent_card,
     build_stats_card,
 )
 from app.feishu.client import FeishuClient
+from app.feishu.context import ConversationContext
+from app.feishu.intent import IntentDetector
+from app.feishu.research_cards import build_research_result_card, build_research_unavailable_card
 from app.ingest.pipeline import IngestPipeline
 from app.models import (
     GraphStats,
@@ -34,6 +38,7 @@ from app.models import (
 if TYPE_CHECKING:
     from app.auth.user_store import UserStore
     from app.services.ingest_tracker import IngestTracker
+    from app.services.miromind_client import MiroMindClient
 
 # Lazy imports for social services (to avoid hard dependency)
 try:
@@ -100,6 +105,13 @@ _user_store: "UserStore | None" = None
 _social_fetcher: Any = None  # SocialFetcher | None
 _ocr: Any = None             # ImageOCRExtractor | None
 
+# Intent detection + conversation context (set by init_intent_context)
+_intent_detector: IntentDetector | None = None
+_context: ConversationContext | None = None
+
+# MiroMind deep research (set by init_research_service)
+_miromind_client: "MiroMindClient | None" = None
+
 
 def init_handlers(
     ingest_pipeline: IngestPipeline,
@@ -129,6 +141,22 @@ def init_social_services(
     global _social_fetcher, _ocr
     _social_fetcher = social_fetcher
     _ocr = ocr
+
+
+def init_intent_context(
+    intent_detector: IntentDetector,
+    context: ConversationContext,
+) -> None:
+    """Initialize intent detection and conversation context services."""
+    global _intent_detector, _context
+    _intent_detector = intent_detector
+    _context = context
+
+
+def init_research_service(miromind_client: "MiroMindClient") -> None:
+    """Initialize MiroMind deep research service."""
+    global _miromind_client
+    _miromind_client = miromind_client
 
 
 # ======================================================================
@@ -195,7 +223,12 @@ async def _resolve_sender_context(sender_open_id: str) -> None:
 # ======================================================================
 
 async def handle_text(content: dict, message_id: str) -> None:
-    """Handle text message: check for commands or treat as knowledge input."""
+    """Handle text message: check for commands or treat as knowledge input.
+
+    V2.2: Integrates intent detection — questions are auto-routed to query
+    without requiring /q prefix. Conversation context enables follow-up
+    entity enrichment.
+    """
     text = content.get("text", "").strip()
     if not text:
         return
@@ -208,12 +241,26 @@ async def handle_text(content: dict, message_id: str) -> None:
         await handle_stats(message_id)
     elif cmd == "search":
         await handle_search(args, message_id)
+    elif cmd == "research":
+        await handle_research(args, message_id)
     elif cmd == "recent":
-        await handle_recent(message_id)
+        await handle_recent(message_id, args)
+    elif cmd == "end":
+        await handle_end(message_id)
     elif cmd == "help":
         await handle_help(message_id)
     else:
-        await handle_ingest_text(text, message_id)
+        # Intent auto-detection: classify as query or input
+        user_id = Neo4jDatabase.get_current_user_id_or_default()
+        has_ctx = _context.has_active_context(user_id) if _context else False
+        if _intent_detector:
+            intent = await _intent_detector.detect(text, has_recent_query=has_ctx)
+        else:
+            intent = "input"  # safe default when detector unavailable
+        if intent == "query":
+            await handle_query(text, message_id, user_id=user_id)
+        else:
+            await handle_ingest_text(text, message_id)
 
 
 async def handle_rich_text(content: dict, message_id: str) -> None:
@@ -335,15 +382,42 @@ async def handle_audio(content: dict, message_id: str) -> None:
 # Command Handlers
 # ======================================================================
 
-async def handle_query(question: str, message_id: str) -> None:
-    """Handle /q command: query the knowledge base."""
+async def handle_query(question: str, message_id: str, user_id: str | None = None) -> None:
+    """Handle /q command or auto-detected query: query the knowledge base.
+
+    V2.2: Integrates conversation context — follow-up questions are enriched
+    with entity context and query history is passed to the LLM.
+    """
     if not _query_pipeline or not _feishu_client:
         return
+
+    # Resolve user_id for context isolation
+    if user_id is None:
+        user_id = Neo4jDatabase.get_current_user_id_or_default()
+
+    # Enrich follow-up question with entity context if available
+    enriched_question = question
+    context_history: list[dict[str, Any]] = []
+    if _context:
+        enriched_question = _context.enrich_followup(user_id, question)
+        context_history = _context.get_context_history(user_id)
 
     await _feishu_client.reply_text(message_id, "正在查询...")
 
     try:
-        result = await _query_pipeline.run(QueryRequest(question=question))
+        result = await _query_pipeline.run(QueryRequest(
+            question=enriched_question,
+            context_history=context_history,
+        ))
+
+        # Record this turn in conversation context
+        if _context:
+            _context.add_turn(
+                user_id=user_id,
+                question=question,  # original question, not enriched
+                answer=result.answer,
+            )
+
         card = build_query_card(result)
         await _feishu_client.reply_message(message_id, card)
     except Exception as exc:
@@ -405,29 +479,51 @@ async def handle_search(keyword: str, message_id: str) -> None:
         await send_error(message_id, f"搜索失败: {exc}")
 
 
-async def handle_recent(message_id: str) -> None:
-    """Handle /recent command: show recently updated nodes."""
+async def handle_recent(message_id: str, args: str = "") -> None:
+    """Handle /recent command: show recently updated nodes with optional filters.
+
+    Supported args:
+        /recent 20            — limit to 20 records
+        /recent entity        — filter by label (Entity/Concept/Comparison)
+        /recent 7d            — filter by time window (e.g. 1d, 7d, 30d)
+        /recent entity 7d 20  — combined filters
+    """
     if not _pipeline or not _feishu_client:
         return
 
-    try:
-        records = await _pipeline.db.execute_read_for_user(
-            """
-            MATCH (n) WHERE (n:Entity OR n:Concept) AND n.user_id = $_user_id
-            RETURN n.name AS name, n.summary AS summary, n.updated_at AS updated
-            ORDER BY n.updated_at DESC LIMIT 10
-            """
-        )
-        if records:
-            items = "\n".join(f"- **{r['name']}** — {r.get('summary', '')}" for r in records)
-        else:
-            items = "知识库暂无内容"
+    # Parse args
+    limit = 10
+    label_filter: str | None = None
+    days_filter: int | None = None
 
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {"title": {"tag": "plain_text", "content": "📝 最近更新"}},
-            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": items}}],
-        }
+    for token in args.split():
+        if token.isdigit():
+            limit = min(int(token), 50)
+        elif re.match(r'^(\d+)d$', token, re.IGNORECASE):
+            days_filter = int(re.match(r'^(\d+)d$', token, re.IGNORECASE).group(1))
+        elif token.lower() in ("entity", "concept", "comparison"):
+            label_filter = token.capitalize()
+
+    # Build Cypher query with optional filters
+    where_clauses = ["(n:Entity OR n:Concept OR n:Comparison)", "n.user_id = $_user_id"]
+    if days_filter is not None:
+        where_clauses.append(f"n.updated_at >= datetime() - duration({{days: {days_filter}}})")
+    where_clause = " AND ".join(where_clauses)
+
+    label_clause = ""
+    if label_filter:
+        label_clause = f" AND '{label_filter}' IN labels(n)"
+
+    cypher = f"""
+        MATCH (n) WHERE {where_clause}{label_clause}
+        RETURN n.name AS name, n.summary AS summary,
+               n.updated_at AS updated, labels(n) AS labels
+        ORDER BY n.updated_at DESC LIMIT {limit}
+    """
+
+    try:
+        records = await _pipeline.db.execute_read_for_user(cypher)
+        card = build_recent_card(records)
         await _feishu_client.reply_message(message_id, card)
     except Exception as exc:
         await send_error(message_id, f"查询失败: {exc}")
@@ -438,6 +534,90 @@ async def handle_help(message_id: str) -> None:
     if _feishu_client:
         card = build_help_card()
         await _feishu_client.reply_message(message_id, card)
+
+
+async def handle_end(message_id: str) -> None:
+    """Handle /end command: clear conversation context for the current user."""
+    if not _feishu_client:
+        return
+    user_id = Neo4jDatabase.get_current_user_id_or_default()
+    if _context:
+        _context.clear(user_id)
+    await _feishu_client.reply_text(message_id, "对话上下文已清空。")
+
+
+async def handle_research(question: str, message_id: str) -> None:
+    """Handle /research command: trigger MiroMind deep research.
+
+    Sends an instant confirmation, then runs the research in a background task.
+    """
+    if not _feishu_client:
+        return
+
+    # Check if MiroMind is configured
+    if not _miromind_client or not _miromind_client.is_configured:
+        card = build_research_unavailable_card()
+        await _feishu_client.reply_message(message_id, card)
+        return
+
+    # Instant acknowledgment
+    await _feishu_client.reply_text(message_id, "🔬 正在调用 MiroMind 进行深度研究，请耐心等待...")
+
+    # Run research in background
+    task = asyncio.create_task(
+        _run_research_and_send(question, message_id)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _run_research_and_send(question: str, message_id: str) -> None:
+    """Background task: run MiroMind research → ingest into KB → send result card."""
+    if not _feishu_client or not _miromind_client:
+        return
+
+    # Step 1: Call MiroMind API (non-streaming)
+    result = await _miromind_client.research(question)
+
+    if result.status == "error":
+        card = build_research_result_card(question, result)
+        await _feishu_client.reply_message(message_id, card)
+        return
+
+    # Step 2: Auto-ingest into knowledge base
+    ingest_summary = ""
+    settings = None
+    try:
+        from app.config import get_settings
+        settings = get_settings()
+    except Exception:
+        pass
+
+    if settings and settings.miromind_auto_ingest and _pipeline and result.content:
+        try:
+            from app.adapters.miromind import MiroMindAdapter
+
+            adapter = MiroMindAdapter(min_tokens=settings.miromind_min_tokens)
+            payload = result.to_miromind_payload()
+            extracted = await adapter.extract(payload)
+            is_valid, reason = await adapter.validate(extracted)
+
+            if is_valid:
+                source, options = await adapter.transform(extracted)
+                ingest_result = await _pipeline.run(IngestRequest(source=source, options=options.__dict__))
+                gr = ingest_result.graph_result
+                n_new = len(gr.nodes_created) if gr else 0
+                n_upd = len(gr.nodes_updated) if gr else 0
+                ingest_summary = f"新增 {n_new} 节点，更新 {n_upd} 节点"
+            else:
+                ingest_summary = f"跳过入库（{reason}）"
+        except Exception as exc:
+            logger.warning("Research auto-ingest failed: %s", exc)
+            ingest_summary = f"入库失败: {exc}"
+
+    # Step 3: Send result card
+    card = build_research_result_card(question, result, ingest_summary)
+    await _feishu_client.reply_message(message_id, card)
 
 
 # ======================================================================
@@ -553,7 +733,7 @@ def parse_command(text: str) -> tuple[str, str]:
     """Parse command prefix from text.
 
     Returns (command, args).
-    Commands: /q (query), /stats, /search, /recent, /help
+    Commands: /q (query), /stats, /search, /recent, /help, /end
     """
     m = re.match(r'^/(?:q|query)\s+(.+)', text, re.IGNORECASE)
     if m:
@@ -566,11 +746,19 @@ def parse_command(text: str) -> tuple[str, str]:
     if m:
         return "search", m.group(1).strip()
 
-    if re.match(r'^/recent', text, re.IGNORECASE):
-        return "recent", ""
+    m = re.match(r'^/research\s+(.+)', text, re.IGNORECASE)
+    if m:
+        return "research", m.group(1).strip()
+
+    m = re.match(r'^/recent\s*(.*)', text, re.IGNORECASE)
+    if m:
+        return "recent", m.group(1).strip()
 
     if re.match(r'^/help', text, re.IGNORECASE):
         return "help", ""
+
+    if re.match(r'^/end', text, re.IGNORECASE):
+        return "end", ""
 
     return "input", text
 
