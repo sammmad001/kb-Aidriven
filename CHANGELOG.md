@@ -9,10 +9,17 @@
 ## [Unreleased]
 
 ### fix
-- mount frontend dist on FastAPI + CD pipeline frontend build + XHS redirect loop guard ([v1.1.6])
+- fix CD pipeline: add setup-node step for frontend build + ensure dist target dir exists ([v1.1.7])
   - 发布时间: 2026-06-16
   - 优先级: P0
   - 部署状态: pending
+  - 根因: GitHub Actions runner 默认 Node.js 20，项目需要 Node.js 22（Vite 8 + TypeScript 6）
+
+### fix
+- mount frontend dist on FastAPI + CD pipeline frontend build + XHS redirect loop guard ([v1.1.6])
+  - 发布时间: 2026-06-16
+  - 优先级: P0
+  - 部署状态: failed (CD #13 frontend build step failed)
 
 ### fix
 - fix social URL detection in handle_text for plain-text shares ([v1.1.5])

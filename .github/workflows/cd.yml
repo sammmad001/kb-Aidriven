@@ -49,9 +49,18 @@ jobs:
             -e "ssh -o ConnectTimeout=10" \
             kb/ ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: kb-web/package-lock.json
+
       - name: Build and upload frontend
         run: |
           cd kb-web && npm ci && npm run build
+          ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
+            "mkdir -p /opt/knowledge-base/kb-web/dist"
           rsync -avz --delete \
             -e "ssh -o ConnectTimeout=10" \
             dist/ ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/opt/knowledge-base/kb-web/dist/
