@@ -28,6 +28,16 @@ class Preprocessor:
         self._raw_dir = settings.raw_dir
         self._http = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         os.makedirs(self._raw_dir, exist_ok=True)
+        # ASR 转写器（延迟 import，dashscope 为可选依赖）
+        from app.ingest.asr import AudioTranscriber
+
+        if getattr(settings, "asr_enabled", True):
+            self._transcriber = AudioTranscriber(
+                dashscope_api_key=settings.dashscope_api_key,
+                model=getattr(settings, "asr_model", "paraformer-realtime-v2"),
+            )
+        else:
+            self._transcriber = AudioTranscriber(dashscope_api_key="")
 
     def _user_raw_dir(self) -> str:
         """Get user-scoped raw directory for file isolation."""
@@ -157,17 +167,52 @@ class Preprocessor:
         return content, self._slugify(title)
 
     async def _process_audio(self, source: str, **kwargs: Any) -> tuple[str, str]:
-        """Audio: save raw, mark as Whisper transcription placeholder."""
-        title = kwargs.get("file_name", "audio")
-        content = "[Audio uploaded - Whisper transcription pending]\n\nAudio data stored in raw sources."
+        """Audio: 保存 .opus 原始文件，调用 Paraformer ASR 转写。
+
+        转写成功后文本自动进入 Analyze → GraphProcess → Render 流程。
+        失败时降级为 placeholder 文本，不中断 pipeline。
+        """
+        file_name = kwargs.get("file_name", "audio")
+
+        # ① 解码并保存原始音频（.opus 扩展名，用于溯源）
+        audio_path = ""
         try:
             raw_bytes = base64.b64decode(source)
             raw_dir = self._user_raw_dir()
-            audio_path = os.path.join(raw_dir, f"{datetime.now().strftime('%Y-%m-%d')}-{self._slugify(title)}")
-            with open(audio_path + ".bin", "wb") as f:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            base_path = os.path.join(raw_dir, f"{date_str}-{self._slugify(file_name)}")
+            audio_path = base_path + ".opus"
+            with open(audio_path, "wb") as f:
                 f.write(raw_bytes)
         except Exception as exc:
-            logger.warning("Audio save failed: %s", exc)
+            logger.warning("音频保存失败: %s", exc)
+
+        # ② ASR 转写
+        transcript = ""
+        if audio_path and os.path.exists(audio_path):
+            result = await self._transcriber.transcribe(audio_path)
+            if result.success:
+                logger.info(
+                    "ASR 成功 [%s]: %d 字符, %.0fms",
+                    result.request_id, len(result.text), result.duration_ms,
+                )
+                transcript = result.text
+            else:
+                logger.warning("ASR 降级: %s", result.error)
+
+        # ③ 构建 content + title
+        if transcript.strip():
+            content = transcript
+            title = self._extract_title(transcript) or file_name
+        else:
+            saved = os.path.basename(audio_path) if audio_path else file_name
+            content = (
+                "[语音消息 - 转写失败，原始音频已保存]\n\n"
+                f"音频文件：{saved}\n"
+                "原因：ASR 服务不可用或转写失败。"
+            )
+            title = file_name
+
         return content, self._slugify(title)
 
     # ------------------------------------------------------------------

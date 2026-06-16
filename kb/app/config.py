@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     dashscope_model: str = "qwen3.5-plus"  # 默认模型（兼容旧配置）
 
+    # ASR 语音识别（飞书语音消息转写，复用同一个 DASHSCOPE_API_KEY）
+    asr_enabled: bool = True                     # 是否启用音频转写（关闭则降级为 placeholder）
+    asr_model: str = "paraformer-realtime-v2"    # Paraformer 实时语音识别模型
+
     # DashScope 分环节模型分配（V1.1优化：隐式推理从 flash 升级到 plus）
     dashscope_model_analyze: str = "qwen-turbo"     # Step 2 分析分类（轻量任务）
     dashscope_model_compile: str = "qwen3.5-plus"   # Step 3b 页面编写（质量关键）
