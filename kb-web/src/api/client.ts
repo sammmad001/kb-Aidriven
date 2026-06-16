@@ -1,9 +1,31 @@
 import type { GraphData, GraphStats, KnowledgeChainReport, NodeDetail, SearchResult, QueryResult } from './types';
 
 const BASE_URL = '/api';
+const ACCESS_KEY = 'kb_access_token';
+const REFRESH_KEY = 'kb_refresh_token';
 
-// Bearer token for API authentication (injected at build or runtime)
-const API_TOKEN = import.meta.env.VITE_API_TOKEN ?? '';
+function getAuthToken(): string | null {
+  return localStorage.getItem(ACCESS_KEY);
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refresh = localStorage.getItem(REFRESH_KEY);
+  if (!refresh) return null;
+  try {
+    const res = await fetch(`${BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refresh }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    localStorage.setItem(ACCESS_KEY, data.access_token);
+    localStorage.setItem(REFRESH_KEY, data.refresh_token);
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
 
 interface FetchOptions {
   method?: 'GET' | 'POST';
@@ -12,18 +34,42 @@ interface FetchOptions {
 
 async function fetchJson<T>(url: string, options?: FetchOptions): Promise<T> {
   const headers: Record<string, string> = {};
-  if (API_TOKEN) {
-    headers['Authorization'] = `Bearer ${API_TOKEN}`;
-  }
-  const init: RequestInit = { headers };
+
   if (options?.method === 'POST') {
     headers['Content-Type'] = 'application/json';
-    init.method = 'POST';
-    if (options.body) {
-      init.body = JSON.stringify(options.body);
+  }
+
+  const doFetch = (token: string | null): RequestInit => {
+    const h = { ...headers };
+    if (token) h['Authorization'] = `Bearer ${token}`;
+    const init: RequestInit = { headers: h };
+    if (options?.method === 'POST') {
+      init.method = 'POST';
+      if (options.body) {
+        init.body = JSON.stringify(options.body);
+      }
+    }
+    return init;
+  };
+
+  let token = getAuthToken();
+  let res = await fetch(`${BASE_URL}${url}`, doFetch(token));
+
+  // Auto-refresh on 401
+  if (res.status === 401 && token) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      token = newToken;
+      res = await fetch(`${BASE_URL}${url}`, doFetch(token));
+    } else {
+      // Refresh failed — clear tokens and redirect to login
+      localStorage.removeItem(ACCESS_KEY);
+      localStorage.removeItem(REFRESH_KEY);
+      window.location.reload();
+      throw new Error('Session expired');
     }
   }
-  const res = await fetch(`${BASE_URL}${url}`, init);
+
   if (!res.ok) {
     throw new Error(`API error: ${res.status} ${res.statusText}`);
   }

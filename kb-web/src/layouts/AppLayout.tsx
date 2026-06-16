@@ -1,6 +1,15 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useAuth } from '../auth/AuthContext';
 
 export default function AppLayout() {
+  const { username, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login', { replace: true });
+  };
+
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
       isActive
@@ -26,6 +35,17 @@ export default function AppLayout() {
               智能问答
             </NavLink>
           </nav>
+        </div>
+
+        {/* User info + logout */}
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-[#94a3b8]">{username}</span>
+          <button
+            onClick={handleLogout}
+            className="px-3 py-1.5 rounded-lg text-sm text-[#94a3b8] hover:text-[#fca5a5] hover:bg-[#334155] transition-colors"
+          >
+            退出
+          </button>
         </div>
       </header>
 

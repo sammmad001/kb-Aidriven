@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+### feat
+- add Web UI login flow with JWT auth: LoginPage + AuthContext + ProtectedRoute + token auto-refresh ([v1.1.8])
+  - 发布时间: 2026-06-16
+  - 优先级: P1
+  - 部署状态: pending
+  - 新增文件: auth/AuthContext.tsx, auth/ProtectedRoute.tsx, pages/LoginPage.tsx
+  - 修改文件: api/client.ts, main.tsx, router.tsx, layouts/AppLayout.tsx
+
 ### fix
 - fix CD pipeline: add setup-node step for frontend build + ensure dist target dir exists ([v1.1.7])
   - 发布时间: 2026-06-16
