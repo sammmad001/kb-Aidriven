@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-import re
+
+import jieba.posseg as pseg
 
 from app.database import Neo4jDatabase
 from app.llm import LLMClient
@@ -120,33 +121,50 @@ class QueryUnderstander:
     # ------------------------------------------------------------------
 
     async def _extract_entities(self, question: str) -> list[str]:
-        """Extract entity names from query and map to Neo4j nodes (batched — PERF-01 fix)."""
-        # Split query into potential entity terms (Chinese chars, English words)
-        terms = re.findall(r'[\u4e00-\u9fff]+|[A-Za-z][A-Za-z0-9_]*', question)
+        """Extract entity names from query using jieba POS tagging + Neo4j lookup.
 
-        # Filter short terms and stop words
-        stop_words = {"是什么", "什么", "为什么", "怎么", "如何", "哪些",
-                      "所有", "整体", "全局", "关系", "区别",
-                      "what", "how", "why", "the", "and", "for", "are", "is"}
-        valid_terms = [t for t in terms if len(t) >= 2 and t not in stop_words]
+        Uses jieba.posseg for Chinese word segmentation with part-of-speech
+        filtering to extract meaningful entity candidates (nouns, proper nouns,
+        verbal nouns, and English tokens). This replaces the previous naive
+        regex r'[\u4e00-\u9fff]+' which treated entire Chinese sentences as
+        single tokens.
+        """
+        # Step 1: jieba POS tagging — extract noun-like terms
+        words = pseg.cut(question)
+        candidate_terms: list[str] = []
+        seen: set[str] = set()
+        for w in words:
+            # Keep nouns, proper nouns, verbal nouns, verbs, abbreviations, and English words
+            if w.flag.startswith(("n", "nr", "ns", "nt", "nz", "v", "vn", "j", "eng")):
+                term = w.word.strip()
+                if len(term) >= 2 and term not in seen:
+                    seen.add(term)
+                    candidate_terms.append(term)
+
+        # Step 2: Filter stop words
+        _STOP_WORDS = {
+            "是什么", "什么", "为什么", "怎么", "如何", "哪些", "是不是",
+            "有没有", "能不能", "可不可以", "会不会", "查询", "帮我",
+            "所有", "整体", "全局", "关系", "区别", "相关", "的", "和",
+            "了", "在", "是", "有", "我", "你", "他", "她", "它", "们",
+            "这", "那", "哪", "个", "些", "一下", "一点", "吗", "呢",
+            "what", "how", "why", "the", "and", "for", "are", "is", "a", "an",
+        }
+        valid_terms = [t for t in candidate_terms if t not in _STOP_WORDS]
 
         if not valid_terms:
             return []
 
-        # Dynamically build Cypher query based on actual term count
+        # Step 3: Neo4j lookup (batched, limit 5 terms)
         terms_slice = valid_terms[:5]
-
-        # Build WHERE clauses and params only for available terms
         clauses: list[str] = []
         kw_params: dict[str, str] = {}
         for i, term in enumerate(terms_slice):
             key = f"kw{i}"
             kw_params[key] = term
             clauses.append(f"(n.id CONTAINS ${key} OR n.name CONTAINS ${key})")
-        
-        where_clause = " OR ".join(clauses)
 
-        # Batch search: single Cypher query with dynamic clauses
+        where_clause = " OR ".join(clauses)
         records = await self._db.execute_read_for_user(
             f"""
             MATCH (n)
@@ -161,14 +179,18 @@ class QueryUnderstander:
         return [r["name"] for r in records if r.get("name")]
 
     def _extract_keywords(self, question: str) -> list[str]:
-        """Extract keywords from query."""
-        # Simple: split and filter
-        words = re.findall(r'[\u4e00-\u9fff]+|[A-Za-z][A-Za-z0-9_]*', question)
-        return [w for w in words if len(w) >= 2][:10]
+        """Extract keywords from query using jieba word segmentation."""
+        import jieba
+        words = jieba.cut(question)
+        return [w for w in words if len(w.strip()) >= 2][:10]
 
     def _is_ambiguous(self, rule_result: dict, question: str) -> bool:
-        """Check if rule-based result is ambiguous."""
-        # If depth is 0 (factual) but question is long, might be ambiguous
-        if rule_result.get("depth", 0) == 0 and len(question) > 30:
+        """Check if rule-based result is ambiguous.
+
+        Lowered threshold from 30 to 15: short Chinese queries like
+        '帮我查询海力士和存储相关的知识' (16 chars) should trigger LLM
+        classification when rule-based result is bare factual/depth=0.
+        """
+        if rule_result.get("depth", 0) == 0 and len(question) > 15:
             return True
         return False

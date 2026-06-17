@@ -68,6 +68,14 @@ class QueryType(str, Enum):
     GLOBAL = "global"
 
 
+class QueryStatus(str, Enum):
+    """V1.2: Query result status — distinguishes success from failure modes."""
+    OK = "ok"                   # Full success — retrieval + generation both worked
+    PARTIAL = "partial"          # Partial success — some entities matched, some didn't
+    INSUFFICIENT = "insufficient"  # No matching data found at all
+    ERROR = "error"              # Pipeline exception
+
+
 class TaskStatusEnum(str, Enum):
     """Background task status."""
     QUEUED = "queued"
@@ -359,6 +367,13 @@ class RetrievalResult(BaseModel):
     cluster_info: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class EntityResolution(BaseModel):
+    """V1.2: Result of entity resolution — bridges extraction and retrieval."""
+    resolved: list[str] = Field(default_factory=list)       # Successfully matched entity names
+    unresolved: list[str] = Field(default_factory=list)     # Failed to match in Neo4j
+    suggestions: list[str] = Field(default_factory=list)    # Search suggestions for user
+
+
 class SourceReference(BaseModel):
     """A reference to a knowledge node used in an answer."""
     node_id: str
@@ -367,13 +382,21 @@ class SourceReference(BaseModel):
 
 
 class QueryResult(BaseModel):
-    """Final result of a complete query pipeline run."""
+    """Final result of a complete query pipeline run.
+
+    V1.2: Added status, unresolved_entities, search_suggestions, trace_id fields
+    to distinguish success/failure modes and enable structured error feedback.
+    """
     answer: str
+    status: QueryStatus = QueryStatus.OK
     sources: list[SourceReference] = Field(default_factory=list)
     implicit_relations_used: list[ImplicitRelation] = Field(default_factory=list)
+    unresolved_entities: list[str] = Field(default_factory=list)
+    search_suggestions: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0, default=0.8)
     query_type: QueryType = QueryType.FACTUAL
     depth: int = 0
+    trace_id: str = ""
 
 
 # ---------------------------------------------------------------------------

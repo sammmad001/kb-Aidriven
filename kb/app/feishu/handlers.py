@@ -10,16 +10,24 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from app.database import Neo4jDatabase
 from app.feishu.cards import (
+    build_bind_error_card,
+    build_bind_success_card,
     build_complete_card,
     build_error_card,
     build_help_card,
     build_query_card,
     build_recent_card,
+    build_register_error_card,
+    build_register_success_card,
     build_stats_card,
+    build_unbind_card,
+    build_unbound_prompt_card,
+    build_whoami_card,
 )
 from app.feishu.client import FeishuClient
 from app.feishu.context import ConversationContext
@@ -112,6 +120,9 @@ _context: ConversationContext | None = None
 # MiroMind deep research (set by init_research_service)
 _miromind_client: "MiroMindClient | None" = None
 
+# Current Feishu sender open_id for this async context (set by dispatch_message)
+_current_open_id: ContextVar[str] = ContextVar("current_open_id", default="")
+
 
 def init_handlers(
     ingest_pipeline: IngestPipeline,
@@ -170,11 +181,44 @@ async def dispatch_message(
 
     V2.0: Resolves Feishu open_id → kb user_id and sets Neo4j context for
     per-user data isolation before dispatching to handlers.
+    V2.1: Unbound users are intercepted — only /bind, /help, /whoami allowed.
     """
     try:
-        # Resolve Feishu sender to kb user and set Neo4j user context
-        await _resolve_sender_context(sender_open_id)
+        # Store sender open_id for this async context (used by handle_bind etc.)
+        _current_open_id.set(sender_open_id)
 
+        # Check binding status (does NOT auto-create)
+        bound = False
+        if sender_open_id and _user_store:
+            binding = await _user_store.get_feishu_binding_status(sender_open_id)
+            if binding["bound"]:
+                Neo4jDatabase.set_current_user(binding["user_id"])
+                bound = True
+
+        if not bound:
+            # Unbound user: only allow bind/help/whoami commands
+            text = content.get("text", "").strip() if msg_type == "text" else ""
+            cmd, cmd_args = parse_command(text) if text else ("input", "")
+
+            if cmd in ("register", "bind", "help", "whoami"):
+                # Route to the specific command handler
+                if cmd == "register":
+                    await handle_register(cmd_args, message_id)
+                elif cmd == "bind":
+                    await handle_bind(cmd_args, message_id)
+                elif cmd == "help":
+                    await handle_help(message_id)
+                elif cmd == "whoami":
+                    await handle_whoami(message_id)
+            else:
+                # Intercept everything else with a binding prompt
+                if _feishu_client:
+                    await _feishu_client.reply_message(
+                        message_id, build_unbound_prompt_card(),
+                    )
+            return
+
+        # Bound user: normal dispatch
         handlers = {
             "text": handle_text,
             "rich_text": handle_rich_text,
@@ -192,30 +236,15 @@ async def dispatch_message(
         await send_error(message_id, f"处理失败: {exc}")
 
 
-async def _resolve_sender_context(sender_open_id: str) -> None:
-    """Resolve Feishu open_id to kb user_id and set Neo4j ContextVar.
+async def _resolve_sender_context(sender_open_id: str) -> dict | None:
+    """Query binding status for *sender_open_id* (does NOT auto-create).
 
-    If user_store is available and open_id is provided, looks up or creates
-    the user mapping. Falls back to default user_id for backward compatibility.
+    Returns ``{"bound": bool, "user_id": str|None, "username": str|None}``
+    or ``None`` if user_store / open_id is unavailable.
     """
-    from app.config import get_settings
-
     if sender_open_id and _user_store:
-        try:
-            user = await _user_store.get_or_create_feishu_user(sender_open_id)
-            if user and user.get("id"):
-                Neo4jDatabase.set_current_user(user["id"])
-                logger.debug(
-                    "Feishu user resolved: open_id=%s... -> user_id=%s",
-                    sender_open_id[:8], user["id"],
-                )
-                return
-        except Exception as exc:
-            logger.warning("Failed to resolve Feishu user %s: %s", sender_open_id[:8], exc)
-
-    # Fallback: use default user_id
-    settings = get_settings()
-    Neo4jDatabase.set_current_user(settings.default_user_id)
+        return await _user_store.get_feishu_binding_status(sender_open_id)
+    return None
 
 
 # ======================================================================
@@ -249,6 +278,14 @@ async def handle_text(content: dict, message_id: str) -> None:
         await handle_end(message_id)
     elif cmd == "help":
         await handle_help(message_id)
+    elif cmd == "register":
+        await handle_register(args, message_id)
+    elif cmd == "bind":
+        await handle_bind(args, message_id)
+    elif cmd == "unbind":
+        await handle_unbind(message_id)
+    elif cmd == "whoami":
+        await handle_whoami(message_id)
     else:
         # Social media URL detection (小红书/微博): route to social pipeline
         # before intent detection — covers plain-text shares from mobile apps
@@ -554,6 +591,140 @@ async def handle_end(message_id: str) -> None:
     await _feishu_client.reply_text(message_id, "对话上下文已清空。")
 
 
+# ======================================================================
+# Account Binding Handlers (V2.1)
+# ======================================================================
+
+async def handle_register(args: str, message_id: str) -> None:
+    """Handle /register command: create a new account + auto-bind.
+
+    Usage: /register <username> <password>
+    Validates username (3-50 chars, [a-zA-Z0-9_-]) and password (≥6 chars)
+    before delegating to UserStore.register_feishu_user.
+    """
+    if not _feishu_client or not _user_store:
+        return
+
+    open_id = _current_open_id.get("")
+    if not open_id:
+        logger.warning("handle_register called without sender open_id")
+        return
+
+    parts = args.split()
+    if len(parts) < 2:
+        await _feishu_client.reply_message(
+            message_id, build_register_error_card("invalid_format"),
+        )
+        return
+
+    username, password = parts[0], parts[1]
+
+    # Validate username format: 3-50 chars, [a-zA-Z0-9_-]
+    if not re.match(r'^[a-zA-Z0-9_\-]{3,50}$', username):
+        await _feishu_client.reply_message(
+            message_id, build_register_error_card("invalid_format"),
+        )
+        return
+
+    # Validate password length ≥ 6
+    if len(password) < 6:
+        await _feishu_client.reply_message(
+            message_id, build_register_error_card("invalid_password"),
+        )
+        return
+
+    await _feishu_client.reply_text(message_id, "正在注册账户...")
+
+    db = _pipeline.db if _pipeline else None
+    result = await _user_store.register_feishu_user(
+        open_id, username, password, db=db,
+    )
+
+    if result["success"]:
+        Neo4jDatabase.set_current_user(result["user_id"])
+        migrated = result.get("migrated_nodes", 0)
+        await _feishu_client.reply_message(
+            message_id, build_register_success_card(username, migrated),
+        )
+    else:
+        error = result.get("error", "unknown")
+        await _feishu_client.reply_message(
+            message_id, build_register_error_card(error),
+        )
+
+
+async def handle_bind(args: str, message_id: str) -> None:
+    """Handle /bind command: verify credentials + bind + migrate data.
+
+    Usage: /bind <username> <password>
+    """
+    if not _feishu_client or not _user_store:
+        return
+
+    open_id = _current_open_id.get("")
+    if not open_id:
+        logger.warning("handle_bind called without sender open_id")
+        return
+
+    parts = args.split()
+    if len(parts) < 2:
+        await _feishu_client.reply_message(
+            message_id, build_bind_error_card("格式错误"),
+        )
+        return
+
+    username, password = parts[0], parts[1]
+
+    await _feishu_client.reply_text(message_id, "正在绑定账户...")
+
+    # Pass Neo4j db instance for data migration if available
+    db = _pipeline.db if _pipeline else None
+    result = await _user_store.bind_feishu_user(
+        open_id, username, password, db=db,
+    )
+
+    if result["success"]:
+        Neo4jDatabase.set_current_user(result["user_id"])
+        migrated = result.get("migrated_nodes", 0)
+        await _feishu_client.reply_message(
+            message_id, build_bind_success_card(username, migrated),
+        )
+    else:
+        error = result.get("error", "unknown")
+        if error == "invalid_credentials":
+            msg = "用户名或密码错误"
+        else:
+            msg = f"绑定失败: {error}"
+        await _feishu_client.reply_message(
+            message_id, build_bind_error_card(msg),
+        )
+
+
+async def handle_unbind(message_id: str) -> None:
+    """Handle /unbind command: remove Feishu → Web account binding."""
+    if not _feishu_client or not _user_store:
+        return
+
+    open_id = _current_open_id.get("")
+    if open_id:
+        await _user_store.unbind_feishu_user(open_id)
+
+    await _feishu_client.reply_message(message_id, build_unbind_card())
+
+
+async def handle_whoami(message_id: str) -> None:
+    """Handle /whoami command: show current binding status."""
+    if not _feishu_client or not _user_store:
+        return
+
+    open_id = _current_open_id.get("")
+    if not open_id:
+        return
+
+    binding = await _user_store.get_feishu_binding_status(open_id)
+    await _feishu_client.reply_message(message_id, build_whoami_card(binding))
+
+
 async def handle_research(question: str, message_id: str) -> None:
     """Handle /research command: trigger MiroMind deep research.
 
@@ -767,6 +938,21 @@ def parse_command(text: str) -> tuple[str, str]:
 
     if re.match(r'^/end', text, re.IGNORECASE):
         return "end", ""
+
+    # Account registration + binding commands (V2.1)
+    m = re.match(r'^/register\s+(\S+)\s+(\S+)', text, re.IGNORECASE)
+    if m:
+        return "register", f"{m.group(1)} {m.group(2)}"
+
+    m = re.match(r'^/bind\s+(\S+)\s+(\S+)', text, re.IGNORECASE)
+    if m:
+        return "bind", f"{m.group(1)} {m.group(2)}"
+
+    if re.match(r'^/unbind', text, re.IGNORECASE):
+        return "unbind", ""
+
+    if re.match(r'^/whoami', text, re.IGNORECASE):
+        return "whoami", ""
 
     return "input", text
 

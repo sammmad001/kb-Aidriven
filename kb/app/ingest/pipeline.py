@@ -67,11 +67,11 @@ class IngestPipeline:
         await self._db.initialize_schema()
         self._llm = get_llm_client(self._settings)
         self._preprocessor = Preprocessor(self._settings)
-        self._analyzer = Analyzer(self._llm, self._db, model=self._settings.dashscope_model_analyze)
+        self._analyzer = Analyzer(self._llm, self._db, model=self._settings.deepseek_model_analyze)
         self._graph_processor = GraphProcessor(
             self._llm, self._db,
-            compile_model=self._settings.dashscope_model_compile,
-            reasoning_model=self._settings.dashscope_model_reasoning,
+            compile_model=self._settings.deepseek_model_compile,
+            reasoning_model=self._settings.deepseek_model_reasoning,
         )
         self._renderer = MarkdownRenderer(self._db, self._settings)
         self._initialized = True

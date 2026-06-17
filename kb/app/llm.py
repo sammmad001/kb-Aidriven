@@ -108,14 +108,17 @@ class OllamaClient(LLMClient):
 
 
 class DashScopeClient(LLMClient):
-    """DashScope (Alibaba Cloud / 百炼) LLM client using OpenAI-compatible API."""
+    """DashScope (Alibaba Cloud / 百炼) LLM client using OpenAI-compatible API.
+
+    Timeout reduced from 120s to 30s (P2 fix).
+    """
 
     BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     def __init__(self, api_key: str, model: str) -> None:
         self._api_key = api_key
         self._default_model = model
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._client = httpx.AsyncClient(timeout=30.0)
 
     async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
         effective_model = model or self._default_model
@@ -157,10 +160,12 @@ class DashScopeClient(LLMClient):
 class ResilientLLMClient(LLMClient):
     """V1.1: LLM client wrapper with fallback chain and exponential backoff.
 
-    Wraps an underlying LLMClient (Ollama or DashScope) and adds:
+    Wraps an underlying LLMClient (Ollama, DashScope, or DeepSeek) and adds:
     - Primary model with configurable fallback tiers
     - Exponential backoff on transient failures
     - Automatic retry on timeout/5xx errors
+
+    V1.2: Added DeepSeek fallback chain for the deepseek provider.
     """
 
     # Fallback tiers: (model_name, max_retries, base_backoff_seconds)
@@ -168,6 +173,10 @@ class ResilientLLMClient(LLMClient):
         ("qwen3.5-plus", 1, 1.0),
         ("qwen-flash", 1, 2.0),
         ("qwen-turbo", 1, 4.0),
+    ]
+    _DEEPSEEK_FALLBACKS: list[tuple[str, int, float]] = [
+        ("deepseek-v4-pro", 1, 1.0),
+        ("deepseek-v4-flash", 1, 2.0),
     ]
     _OLLAMA_FALLBACK: str = ""  # Ollama has only one model typically
 
@@ -185,7 +194,11 @@ class ResilientLLMClient(LLMClient):
         last_error: Exception | None = None
 
         # Determine fallback tiers based on provider
-        if self._provider == "dashscope" and model:
+        if self._provider == "deepseek" and model:
+            tiers = [(model, 1, 1.0)] + [
+                (m, r, b) for m, r, b in self._DEEPSEEK_FALLBACKS if m != model
+            ]
+        elif self._provider == "dashscope" and model:
             tiers = [(model, 1, 1.0)] + [
                 (m, r, b) for m, r, b in self._DASHSCOPE_FALLBACKS if m != model
             ]
@@ -228,15 +241,98 @@ class ResilientLLMClient(LLMClient):
         await self._inner.close()
 
 
+class DeepSeekClient(LLMClient):
+    """DeepSeek LLM client using OpenAI-compatible API.
+
+    Used as the primary LLM provider for all pipeline stages.
+    Timeout set to 30s — DeepSeek API typically responds within 2-8s.
+    """
+
+    def __init__(self, api_key: str, model: str, base_url: str = "https://api.deepseek.com") -> None:
+        self._api_key = api_key
+        self._default_model = model
+        self._base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(timeout=30.0)  # DeepSeek API responds in 2-8s typically
+
+    async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
+        effective_model = model or self._default_model
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        payload: dict[str, Any] = {
+            "model": effective_model,
+            "messages": messages,
+            "stream": False,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        resp = await self._client.post(
+            f"{self._base_url}/v1/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if _usage is not None:
+            u = data.get("usage", {})
+            _usage.prompt_tokens = u.get("prompt_tokens", 0)
+            _usage.completion_tokens = u.get("completion_tokens", 0)
+            _usage.total_tokens = u.get("total_tokens", 0)
+        return data["choices"][0]["message"]["content"]
+
+    async def close(self) -> None:
+        """Close the underlying httpx client."""
+        await self._client.aclose()
+
+
 def get_llm_client(settings: Settings) -> LLMClient:
     """Factory: create the appropriate LLM client based on settings.
 
     V1.1: DashScope clients are automatically wrapped with ResilientLLMClient
     for fallback chain support on transient failures.
+    V1.2: Added DeepSeek provider support with its own ResilientLLMClient wrapper.
     """
+    if settings.llm_provider == "deepseek":
+        if not settings.deepseek_api_key:
+            raise ValueError("DEEPSEEK_API_KEY is required when llm_provider=deepseek")
+        inner = DeepSeekClient(settings.deepseek_api_key, settings.deepseek_model, settings.deepseek_base_url)
+        return ResilientLLMClient(inner, "deepseek")
     if settings.llm_provider == "dashscope":
         if not settings.dashscope_api_key:
             raise ValueError("DASHSCOPE_API_KEY is required when llm_provider=dashscope")
         inner = DashScopeClient(settings.dashscope_api_key, settings.dashscope_model)
         return ResilientLLMClient(inner, "dashscope")
     return OllamaClient(settings.ollama_base_url, settings.ollama_model)
+
+
+def get_intent_llm_client(settings: Settings) -> LLMClient | None:
+    """Factory: create a dedicated LLM client for intent detection.
+
+    Supports an independent provider/model from the main pipeline so that
+    intent classification can use a different, typically lighter/cheaper model.
+
+    Returns None if the provider is not configured (caller falls back to rules-only mode).
+    """
+    provider = settings.intent_llm_provider
+    model = settings.intent_llm_model
+
+    if provider == "deepseek":
+        if not settings.deepseek_api_key:
+            logger.warning("intent_llm_provider=deepseek but DEEPSEEK_API_KEY is empty — falling back to dashscope")
+            provider = "dashscope"
+        else:
+            return DeepSeekClient(settings.deepseek_api_key, model, settings.deepseek_base_url)
+
+    if provider == "dashscope":
+        if not settings.dashscope_api_key:
+            logger.warning("DEEPSEEK_API_KEY and DASHSCOPE_API_KEY both empty — intent detection runs rules-only")
+            return None
+        return DashScopeClient(settings.dashscope_api_key, model)
+
+    return None

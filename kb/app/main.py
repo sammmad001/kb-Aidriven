@@ -151,15 +151,19 @@ async def lifespan(app: FastAPI):
     # V2.2: Initialize intent detection + conversation context
     from app.feishu.intent import IntentDetector
     from app.feishu.context import ConversationContext
+    from app.llm import get_intent_llm_client
 
+    _intent_llm = get_intent_llm_client(settings)
     _intent_detector = IntentDetector(
-        llm=_ingest_pipeline.llm,
-        llm_model=settings.dashscope_model_analyze,  # qwen-turbo for fast classification
+        llm=_intent_llm or _ingest_pipeline.llm,  # dedicated DeepSeek client, fallback to pipeline LLM
+        llm_model=settings.intent_llm_model,  # deepseek-v4-flash
         llm_timeout=2.0,
     )
     _conversation_context = ConversationContext(max_turns=5, ttl_seconds=600)
     init_intent_context(_intent_detector, _conversation_context)
-    logger.info("Intent detection + conversation context initialized")
+    _intent_provider = settings.intent_llm_provider if _intent_llm else "pipeline-fallback"
+    logger.info("Intent detection + conversation context initialized (provider=%s, model=%s)",
+                _intent_provider, settings.intent_llm_model)
 
     # V2.3: Initialize MiroMind deep research client
     from app.services.miromind_client import MiroMindClient
@@ -219,7 +223,7 @@ async def lifespan(app: FastAPI):
     _implicit_reviewer = ImplicitRelationReviewer(
         db=_ingest_pipeline.db,
         llm=_ingest_pipeline.llm,
-        reasoning_model=settings.dashscope_model_reasoning,
+        reasoning_model=settings.deepseek_model_reasoning,
         interval_hours=24,
     )
     _implicit_reviewer.start()
@@ -395,7 +399,9 @@ async def health() -> dict:
 
     # Check LLM config
     settings = get_settings()
-    if settings.dashscope_api_key:
+    if settings.llm_provider == "deepseek" and settings.deepseek_api_key:
+        components["llm"] = f"ok (deepseek/{settings.deepseek_model})"
+    elif settings.dashscope_api_key:
         components["llm"] = f"ok ({settings.llm_provider}/{settings.dashscope_model})"
     else:
         components["llm"] = "not_configured"

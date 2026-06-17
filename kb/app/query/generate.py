@@ -43,22 +43,24 @@ class AnswerGenerator:
         context_history: list[dict[str, Any]] | None = None,
     ) -> QueryResult:
         """Generate a structured answer based on retrieval results."""
-        # Special case: factual with direct content → no LLM needed
+        # Special case: factual with single node + direct content → no LLM needed
         if query_type == QueryType.FACTUAL and retrieval.nodes:
-            node = retrieval.nodes[0]
-            content = node.get("content", "")
-            if content:
-                return QueryResult(
-                    answer=content,
-                    sources=[SourceReference(
-                        node_id=node.get("id", ""),
-                        node_name=node.get("name", ""),
-                        relevance=1.0,
-                    )],
-                    query_type=query_type,
-                    depth=0,
-                    confidence=1.0,
-                )
+            if len(retrieval.nodes) == 1:
+                node = retrieval.nodes[0]
+                content = node.get("content", "")
+                if content:
+                    return QueryResult(
+                        answer=content,
+                        sources=[SourceReference(
+                            node_id=node.get("id", ""),
+                            node_name=node.get("name", ""),
+                            relevance=1.0,
+                        )],
+                        query_type=query_type,
+                        depth=0,
+                        confidence=1.0,
+                    )
+            # Multi-node factual: fall through to LLM synthesis for comprehensive answer
 
         # Build user prompt with retrieval context
         user_prompt = self._build_prompt(question, retrieval, context_history)

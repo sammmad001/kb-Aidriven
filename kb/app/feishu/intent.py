@@ -55,7 +55,7 @@ class IntentDetector:
     def __init__(
         self,
         llm: LLMClient | None = None,
-        llm_model: str = "qwen-turbo",
+        llm_model: str = "deepseek-v4-flash",
         llm_timeout: float = 2.0,
     ) -> None:
         self._llm = llm

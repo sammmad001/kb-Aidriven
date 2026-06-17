@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -425,3 +425,284 @@ class TestAuthDependencies:
             assert user.id == "usr_test123"
             assert user.username == "testuser"
             assert user.is_service is False
+
+
+# ======================================================================
+# Feishu Account Binding Tests (V2.1)
+# ======================================================================
+
+class TestFeishuBinding:
+    """Test Feishu account binding, unbinding, and status queries."""
+
+    @pytest.mark.asyncio
+    async def test_get_feishu_user_returns_none_if_not_mapped(self, user_store):
+        """Unbound open_id should return None."""
+        result = await user_store.get_feishu_user("ou_unbound_001")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_feishu_user_after_bind(self, user_store):
+        """After binding, get_feishu_user returns the Web user."""
+        await user_store.create_user("webuser1", "pass123")
+        await user_store.bind_feishu_user("ou_bound_001", "webuser1", "pass123")
+        result = await user_store.get_feishu_user("ou_bound_001")
+        assert result is not None
+        assert result["username"] == "webuser1"
+
+    @pytest.mark.asyncio
+    async def test_binding_status_unbound(self, user_store):
+        """Unbound open_id → {"bound": False}."""
+        status = await user_store.get_feishu_binding_status("ou_unbound_002")
+        assert status["bound"] is False
+        assert status["user_id"] is None
+        assert status["username"] is None
+
+    @pytest.mark.asyncio
+    async def test_binding_status_bound(self, user_store):
+        """Bound open_id → {"bound": True, "user_id": ..., "username": ...}."""
+        user = await user_store.create_user("webuser2", "pass456")
+        await user_store.bind_feishu_user("ou_bound_002", "webuser2", "pass456")
+        status = await user_store.get_feishu_binding_status("ou_bound_002")
+        assert status["bound"] is True
+        assert status["user_id"] == user["id"]
+        assert status["username"] == "webuser2"
+
+    @pytest.mark.asyncio
+    async def test_bind_success(self, user_store):
+        """Valid credentials → {"success": True}."""
+        user = await user_store.create_user("webuser3", "mypass")
+        result = await user_store.bind_feishu_user("ou_bind_003", "webuser3", "mypass")
+        assert result["success"] is True
+        assert result["user_id"] == user["id"]
+        assert result["username"] == "webuser3"
+        assert result["migrated_nodes"] == 0  # no db passed → no migration
+
+    @pytest.mark.asyncio
+    async def test_bind_wrong_password(self, user_store):
+        """Wrong password → {"success": False, "error": "invalid_credentials"}."""
+        await user_store.create_user("webuser4", "correct")
+        result = await user_store.bind_feishu_user("ou_bind_004", "webuser4", "wrong")
+        assert result["success"] is False
+        assert result["error"] == "invalid_credentials"
+
+    @pytest.mark.asyncio
+    async def test_bind_nonexistent_username(self, user_store):
+        """Non-existent username → {"success": False}."""
+        result = await user_store.bind_feishu_user(
+            "ou_bind_005", "ghost_user", "anything",
+        )
+        assert result["success"] is False
+        assert result["error"] == "invalid_credentials"
+
+    @pytest.mark.asyncio
+    async def test_bind_already_bound_rebinds(self, user_store):
+        """Re-binding an open_id to a different account overrides the mapping."""
+        user_a = await user_store.create_user("user_a", "pass_a")
+        user_b = await user_store.create_user("user_b", "pass_b")
+
+        # Bind to user_a first
+        await user_store.bind_feishu_user("ou_rebind_001", "user_a", "pass_a")
+        status_a = await user_store.get_feishu_binding_status("ou_rebind_001")
+        assert status_a["user_id"] == user_a["id"]
+
+        # Re-bind to user_b
+        result = await user_store.bind_feishu_user(
+            "ou_rebind_001", "user_b", "pass_b",
+        )
+        assert result["success"] is True
+        assert result["user_id"] == user_b["id"]
+
+        status_b = await user_store.get_feishu_binding_status("ou_rebind_001")
+        assert status_b["user_id"] == user_b["id"]
+        assert status_b["username"] == "user_b"
+
+    @pytest.mark.asyncio
+    async def test_unbind_removes_mapping(self, user_store):
+        """After unbind, get_feishu_user returns None."""
+        await user_store.create_user("webuser5", "pass789")
+        await user_store.bind_feishu_user("ou_unbind_001", "webuser5", "pass789")
+
+        # Verify bound
+        assert await user_store.get_feishu_user("ou_unbind_001") is not None
+
+        # Unbind
+        result = await user_store.unbind_feishu_user("ou_unbind_001")
+        assert result["success"] is True
+
+        # Verify unbound
+        assert await user_store.get_feishu_user("ou_unbind_001") is None
+
+    @pytest.mark.asyncio
+    async def test_unbind_already_unbound_is_idempotent(self, user_store):
+        """Unbinding a never-bound open_id still succeeds."""
+        result = await user_store.unbind_feishu_user("ou_never_bound_001")
+        assert result["success"] is True
+
+
+# ======================================================================
+# Feishu Registration Tests (V2.2)
+# ======================================================================
+
+class TestFeishuRegister:
+    """Test Feishu direct registration: /register creates account + auto-binds."""
+
+    @pytest.mark.asyncio
+    async def test_register_success(self, user_store):
+        """New open_id + new username → registration + binding succeeds."""
+        result = await user_store.register_feishu_user(
+            "ou_reg_001", "newuser1", "password123",
+        )
+        assert result["success"] is True
+        assert result["username"] == "newuser1"
+        assert "user_id" in result
+
+    @pytest.mark.asyncio
+    async def test_register_username_exists(self, user_store):
+        """Username already taken → fails with username_exists."""
+        await user_store.create_user("existinguser", "pass123")
+        result = await user_store.register_feishu_user(
+            "ou_reg_002", "existinguser", "pass456",
+        )
+        assert result["success"] is False
+        assert result["error"] == "username_exists"
+
+    @pytest.mark.asyncio
+    async def test_register_already_bound(self, user_store):
+        """open_id already bound → fails with already_bound."""
+        await user_store.create_user("bounduser", "pass123")
+        await user_store.bind_feishu_user("ou_reg_003", "bounduser", "pass123")
+        result = await user_store.register_feishu_user(
+            "ou_reg_003", "anotheruser", "pass456",
+        )
+        assert result["success"] is False
+        assert result["error"] == "already_bound"
+        assert result["username"] == "bounduser"
+
+    @pytest.mark.asyncio
+    async def test_register_migrates_old_data(self, user_store):
+        """Old feishu_* account with data → registration triggers migration."""
+        # Simulate old auto-created feishu account
+        await user_store.get_or_create_feishu_user("ou_reg_004", "OldName")
+
+        mock_db = MagicMock()
+        mock_db.execute_write = AsyncMock(side_effect=[
+            [{"merged_count": 0}],    # Phase 1
+            [{"migrated_count": 8}],  # Phase 2
+        ])
+
+        result = await user_store.register_feishu_user(
+            "ou_reg_004", "freshuser", "pass123", db=mock_db,
+        )
+        assert result["success"] is True
+        assert result["migrated_nodes"] == 8
+
+    @pytest.mark.asyncio
+    async def test_register_then_verify(self, user_store):
+        """After registration, verify_user(username, password) succeeds."""
+        await user_store.register_feishu_user(
+            "ou_reg_005", "verifyme", "mypassword",
+        )
+        user = await user_store.verify_user("verifyme", "mypassword")
+        assert user is not None
+        assert user["username"] == "verifyme"
+
+    @pytest.mark.asyncio
+    async def test_register_creates_mapping(self, user_store):
+        """After registration, get_feishu_binding_status returns bound=True."""
+        result = await user_store.register_feishu_user(
+            "ou_reg_006", "mappeduser", "pass123",
+        )
+        assert result["success"] is True
+
+        status = await user_store.get_feishu_binding_status("ou_reg_006")
+        assert status["bound"] is True
+        assert status["username"] == "mappeduser"
+
+
+# ======================================================================
+# Neo4j Data Migration Tests
+# ======================================================================
+
+class TestNeo4jMigration:
+    """Test Neo4j data migration logic using mock DB."""
+
+    @pytest.mark.asyncio
+    async def test_migrate_no_conflict(self):
+        """No same-name nodes → Phase 2 direct SET user_id."""
+        from app.auth.user_store import UserStore
+
+        mock_db = MagicMock()
+        mock_db.execute_write = AsyncMock(side_effect=[
+            [{"merged_count": 0}],    # Phase 1: nothing to merge
+            [{"migrated_count": 5}],  # Phase 2: 5 nodes migrated
+        ])
+
+        total = await UserStore._migrate_neo4j_data("old_uid", "new_uid", mock_db)
+        assert total == 5
+        assert mock_db.execute_write.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_migrate_with_conflict_merge(self):
+        """Same-name nodes → Phase 1 merges, Phase 2 migrates remaining."""
+        from app.auth.user_store import UserStore
+
+        mock_db = MagicMock()
+        mock_db.execute_write = AsyncMock(side_effect=[
+            [{"merged_count": 3}],    # Phase 1: 3 nodes merged
+            [{"migrated_count": 7}],  # Phase 2: 7 remaining migrated
+        ])
+
+        total = await UserStore._migrate_neo4j_data("old_uid", "new_uid", mock_db)
+        assert total == 10  # 3 merged + 7 migrated
+
+    @pytest.mark.asyncio
+    async def test_migrate_is_idempotent(self):
+        """Re-running migration on already-migrated data → 0 nodes."""
+        from app.auth.user_store import UserStore
+
+        mock_db = MagicMock()
+        mock_db.execute_write = AsyncMock(side_effect=[
+            [{"merged_count": 0}],  # Phase 1: nothing to merge
+            [{"migrated_count": 0}],  # Phase 2: nothing to migrate
+        ])
+
+        total = await UserStore._migrate_neo4j_data("old_uid", "new_uid", mock_db)
+        assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_migrate_phase1_failure_continues(self):
+        """If Phase 1 fails, Phase 2 still runs."""
+        from app.auth.user_store import UserStore
+
+        mock_db = MagicMock()
+        mock_db.execute_write = AsyncMock(side_effect=[
+            Exception("Phase 1 error"),  # Phase 1 fails
+            [{"migrated_count": 5}],      # Phase 2 succeeds
+        ])
+
+        total = await UserStore._migrate_neo4j_data("old_uid", "new_uid", mock_db)
+        assert total == 5  # Only Phase 2 count
+
+    @pytest.mark.asyncio
+    async def test_bind_with_db_triggers_migration(self, user_store):
+        """bind_feishu_user with db → calls _migrate_neo4j_data."""
+        # Simulate auto-created feishu user (old account with data)
+        await user_store.get_or_create_feishu_user(
+            "ou_migrate_001", "OldName",
+        )
+
+        # Create Web account
+        await user_store.create_user("webmigrate", "pass")
+
+        # Mock DB for migration
+        mock_db = MagicMock()
+        mock_db.execute_write = AsyncMock(side_effect=[
+            [{"merged_count": 0}],    # Phase 1
+            [{"migrated_count": 5}],  # Phase 2
+        ])
+
+        result = await user_store.bind_feishu_user(
+            "ou_migrate_001", "webmigrate", "pass", db=mock_db,
+        )
+        assert result["success"] is True
+        assert result["migrated_nodes"] == 5

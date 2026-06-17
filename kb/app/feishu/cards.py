@@ -276,6 +276,11 @@ def build_help_card() -> dict:
                 "- 或直接发送问题（系统自动识别）\n\n"
                 "**深度研究**:\n"
                 "- `/research 量子计算最新进展` — 触发 MiroMind 深度研究并自动入库\n\n"
+                "**账户注册与绑定**:\n"
+                "- `/register 用户名 密码` — 直接注册新账户并绑定（无需 Web 端）\n"
+                "- `/bind 用户名 密码` — 绑定已有 Web 账户\n"
+                "- `/unbind` — 解除绑定\n"
+                "- `/whoami` — 查看当前绑定状态\n\n"
                 "**其他命令**:\n"
                 "- `/stats` — 知识库统计\n"
                 "- `/search 关键词` — 搜索节点\n"
@@ -381,3 +386,159 @@ def build_recent_card(records: list[dict]) -> dict:
     ]
 
     return _card("recent", "📝 最近更新", elements, header_color="blue")
+
+
+# ======================================================================
+# Account Binding Cards
+# ======================================================================
+
+def build_unbound_prompt_card() -> dict:
+    """Card shown to unbound Feishu users — guides them to register + bind."""
+    return _card(
+        "unbound_prompt", "🔒 尚未绑定账户",
+        [
+            _md(
+                "你还没有绑定知识库账户。\n\n"
+                "**方式一：飞书直接注册（推荐）**\n"
+                "```\n/register 用户名 密码\n```\n\n"
+                "一步完成注册 + 绑定，无需打开 Web 端。\n\n"
+                "**方式二：绑定已有 Web 账户**\n"
+                "```\n/bind 用户名 密码\n```\n\n"
+                "如果你已在 Web 端注册过，使用此命令绑定。\n\n"
+                "💡 绑定后，飞书和 Web 端的知识将完全互通。"
+            ),
+            _hr(),
+            _md("输入 `/help` 查看完整命令列表"),
+        ],
+        header_color="orange",
+    )
+
+
+def build_register_success_card(username: str, migrated_nodes: int = 0) -> dict:
+    """Card shown after successful registration + auto-binding from Feishu."""
+    migration_note = ""
+    if migrated_nodes > 0:
+        migration_note = f"\n\n📦 已自动迁移 **{migrated_nodes}** 个知识节点"
+
+    return _card(
+        "register_success", "✅ 注册成功",
+        [
+            _md(
+                f"账户 **{username}** 已创建并自动绑定。{migration_note}\n\n"
+                "现在你可以直接发送消息，所有操作都在此账户下进行。\n"
+                "Web 端和飞书端的知识完全互通。\n\n"
+                "💡 建议妥善保管你的用户名和密码。"
+            ),
+        ],
+        header_color="green",
+    )
+
+
+def build_register_error_card(error_msg: str) -> dict:
+    """Card shown when registration fails.
+
+    error_msg values: already_bound, username_exists, invalid_format, invalid_password
+    """
+    hints = {
+        "already_bound": "当前飞书已绑定账户，如需重新注册请先 `/unbind`",
+        "username_exists": "用户名已被占用，换一个试试，或使用 `/bind` 绑定已有账户",
+        "invalid_format": "用户名需 3-50 个字符，仅支持字母、数字、下划线和连字符",
+        "invalid_password": "密码至少 6 个字符",
+    }
+    hint = hints.get(error_msg, "请检查输入格式后重试")
+
+    return _card(
+        "register_error", "❌ 注册失败",
+        [
+            _md(f"**{hint}**"),
+            _hr(),
+            _md(
+                "**正确格式**：`/register 用户名 密码`\n\n"
+                "要求：\n"
+                "- 用户名：3-50 字符（字母、数字、`_`、`-`）\n"
+                "- 密码：至少 6 字符，不含空格\n\n"
+                "如已有 Web 账户，请使用 `/bind 用户名 密码`"
+            ),
+        ],
+        header_color="red",
+    )
+
+
+def build_bind_success_card(username: str, migrated_nodes: int = 0) -> dict:
+    """Card shown after successful binding."""
+    migration_note = ""
+    if migrated_nodes > 0:
+        migration_note = f"\n\n📦 已自动迁移 **{migrated_nodes}** 个知识节点"
+
+    return _card(
+        "bind_success", "✅ 绑定成功",
+        [
+            _md(
+                f"飞书账户已绑定到 **{username}**。{migration_note}\n\n"
+                "现在你可以直接发送消息，所有操作都在同一账户下进行。\n"
+                "Web 端和飞书端的知识完全互通。"
+            ),
+        ],
+        header_color="green",
+    )
+
+
+def build_bind_error_card(error_msg: str) -> dict:
+    """Card shown when binding fails."""
+    return _card(
+        "bind_error", "❌ 绑定失败",
+        [
+            _md(f"**{error_msg}**"),
+            _hr(),
+            _md(
+                "**正确格式**：`/bind 用户名 密码`\n\n"
+                "请确保：\n"
+                "- 用户名和密码正确\n"
+                "- 已在 Web 端注册账户\n"
+                "- 密码中不含空格"
+            ),
+        ],
+        header_color="red",
+    )
+
+
+def build_whoami_card(binding: dict) -> dict:
+    """Card showing current binding status."""
+    if binding.get("bound"):
+        username = binding.get("username", "未知")
+        user_id = binding.get("user_id", "")
+        elements = [
+            _md(
+                f"**当前状态**：已绑定\n"
+                f"**用户名**：{username}\n"
+                f"**用户ID**：`{user_id}`"
+            ),
+            _hr(),
+            _md("如需解绑，发送 `/unbind`"),
+        ]
+    else:
+        elements = [
+            _md(
+                "**当前状态**：未绑定\n\n"
+                "**方式一**：直接在飞书注册\n"
+                "`/register 用户名 密码`\n\n"
+                "**方式二**：绑定已有 Web 账户\n"
+                "`/bind 用户名 密码`"
+            ),
+        ]
+
+    return _card("whoami", "👤 账户信息", elements, header_color="blue")
+
+
+def build_unbind_card() -> dict:
+    """Card shown after successful unbind."""
+    return _card(
+        "unbind", "🔓 已解绑",
+        [
+            _md(
+                "飞书账户已解除绑定。\n\n"
+                "如需重新绑定，发送 `/bind 用户名 密码`"
+            ),
+        ],
+        header_color="grey",
+    )

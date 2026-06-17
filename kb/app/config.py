@@ -18,25 +18,40 @@ class Settings(BaseSettings):
     neo4j_password: str = ""  # SECURITY: No default — must be set via env
 
     # --- LLM ---
-    llm_provider: Literal["ollama", "dashscope"] = "ollama"
+    llm_provider: Literal["ollama", "dashscope", "deepseek"] = "ollama"
+
+    # DeepSeek (primary LLM provider, OpenAI-compatible API)
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-pro"  # 默认模型
+
+    # DeepSeek 分环节模型分配
+    deepseek_model_analyze: str = "deepseek-v4-flash"    # Step 2 分析分类（轻量任务）
+    deepseek_model_compile: str = "deepseek-v4-pro"      # Step 3b 页面编写（质量关键）
+    deepseek_model_reasoning: str = "deepseek-v4-pro"    # Step 3c 隐式推理（核心推理）
+    deepseek_model_query: str = "deepseek-v4-pro"        # Query 回答生成（用户面向）
 
     # Ollama (local)
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
 
-    # DashScope (Alibaba Cloud / 百炼)
+    # DashScope (Alibaba Cloud / 百炼) — 仅用于 ASR/OCR 非LLM服务
     dashscope_api_key: str = ""
-    dashscope_model: str = "qwen3.5-plus"  # 默认模型（兼容旧配置）
+    dashscope_model: str = "qwen3.5-plus"  # 默认模型（兼容旧配置，仅ASR/OCR时使用）
 
     # ASR 语音识别（飞书语音消息转写，复用同一个 DASHSCOPE_API_KEY）
     asr_enabled: bool = True                     # 是否启用音频转写（关闭则降级为 placeholder）
     asr_model: str = "paraformer-realtime-v2"    # Paraformer 实时语音识别模型
 
-    # DashScope 分环节模型分配（V1.1优化：隐式推理从 flash 升级到 plus）
+    # DashScope 分环节模型分配（已废弃 — 迁移到 DeepSeek，保留用于向后兼容）
     dashscope_model_analyze: str = "qwen-turbo"     # Step 2 分析分类（轻量任务）
     dashscope_model_compile: str = "qwen3.5-plus"   # Step 3b 页面编写（质量关键）
     dashscope_model_reasoning: str = "qwen3.5-plus"  # Step 3c 隐式推理（P0升级：flash→plus）
     dashscope_model_query: str = "qwen3.5-plus"     # Query 回答生成（用户面向）
+
+    # Intent detection LLM (独立于主管线)
+    intent_llm_provider: Literal["dashscope", "deepseek"] = "deepseek"
+    intent_llm_model: str = "deepseek-v4-flash"
 
     # --- Feishu ---
     feishu_app_id: str = ""
@@ -112,6 +127,8 @@ class Settings(BaseSettings):
             errors.append("NEO4J_PASSWORD is required in production")
         if not self.knowledge_api_token:
             errors.append("KNOWLEDGE_API_TOKEN is required in production")
+        if self.llm_provider == "deepseek" and not self.deepseek_api_key:
+            errors.append("DEEPSEEK_API_KEY is required when llm_provider=deepseek")
         if self.llm_provider == "dashscope" and not self.dashscope_api_key:
             errors.append("DASHSCOPE_API_KEY is required when llm_provider=dashscope")
         if self.cors_origins == "*":
