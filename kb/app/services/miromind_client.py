@@ -122,6 +122,7 @@ class MiroMindClient:
             "messages": [
                 {"role": "user", "content": enriched_content},
             ],
+            "stream": False,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -153,7 +154,59 @@ class MiroMindClient:
                         error=f"HTTP {resp.status_code}: {error_text}",
                     )
 
-                data = resp.json()
+                # Guard: empty response body (MiroMind may return 200 with empty body)
+                raw_text = resp.text
+                if not raw_text or not raw_text.strip():
+                    logger.error(
+                        "MiroMind API returned 200 with empty body "
+                        "(content-type=%s, content-length=%s)",
+                        resp.headers.get("content-type"),
+                        resp.headers.get("content-length"),
+                    )
+                    return ResearchResult(
+                        content="",
+                        thinking_text="",
+                        total_tokens=0,
+                        status="error",
+                        model=use_model,
+                        duration_ms=duration_ms,
+                        error="MiroMind API 返回了空响应（服务器可能内部错误，请稍后重试）",
+                    )
+
+                # Detect SSE streaming response (starts with "data:")
+                if raw_text.lstrip().startswith("data:"):
+                    logger.info("MiroMind returned SSE stream, parsing chunks...")
+                    data = self._parse_sse_response(raw_text)
+                    if data is None:
+                        return ResearchResult(
+                            content="",
+                            thinking_text="",
+                            total_tokens=0,
+                            status="error",
+                            model=use_model,
+                            duration_ms=duration_ms,
+                            error="MiroMind API 返回了流式响应但未能解析",
+                        )
+                    return self._parse_response(data, use_model, duration_ms)
+
+                # Standard JSON response
+                try:
+                    data = resp.json()
+                except Exception:
+                    logger.error(
+                        "MiroMind API JSON parse failed. "
+                        "Raw response (first 500 chars): %s",
+                        raw_text[:500],
+                    )
+                    return ResearchResult(
+                        content="",
+                        thinking_text="",
+                        total_tokens=0,
+                        status="error",
+                        model=use_model,
+                        duration_ms=duration_ms,
+                        error=f"MiroMind API 响应格式错误（非 JSON），原始响应前200字符: {raw_text[:200]}",
+                    )
                 return self._parse_response(data, use_model, duration_ms)
 
         except httpx.TimeoutException:
@@ -240,6 +293,54 @@ class MiroMindClient:
             duration_ms=duration_ms,
             tool_events=[],
         )
+
+    def _parse_sse_response(self, raw_text: str) -> dict[str, Any] | None:
+        """Parse SSE (Server-Sent Events) streaming response into a single dict.
+
+        Handles `data: {json}` lines, concatenating delta content chunks
+        into a single Chat Completions-compatible response.
+        """
+        import json
+
+        content_parts: list[str] = []
+        total_tokens = 0
+        model_name = ""
+
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            payload_str = line[5:].strip()
+            if payload_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload_str)
+            except Exception:
+                continue
+            if not model_name:
+                model_name = chunk.get("model", "")
+            choices = chunk.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                text = delta.get("content", "")
+                if text:
+                    content_parts.append(text)
+            usage = chunk.get("usage", {})
+            if usage:
+                total_tokens = usage.get("total_tokens", total_tokens)
+
+        if not content_parts:
+            return None
+
+        return {
+            "model": model_name,
+            "choices": [
+                {
+                    "message": {"content": "".join(content_parts)},
+                }
+            ],
+            "usage": {"total_tokens": total_tokens} if total_tokens else {},
+        }
 
     async def health_check(self) -> bool:
         """Quick health check: verify API key is configured."""

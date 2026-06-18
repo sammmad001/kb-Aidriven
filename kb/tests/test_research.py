@@ -148,9 +148,9 @@ class TestMiroMindClient:
     @pytest.mark.asyncio
     async def test_research_parses_response(self, configured_client: MiroMindClient):
         """Research should correctly parse a Chat Completions API response."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
+        import json as _json
+
+        _resp_data = {
             "model": "mirothinker-1-7-deepresearch-mini",
             "choices": [
                 {
@@ -164,6 +164,10 @@ class TestMiroMindClient:
             ],
             "usage": {"total_tokens": 1200},
         }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = _json.dumps(_resp_data)
+        mock_response.json.return_value = _resp_data
 
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
