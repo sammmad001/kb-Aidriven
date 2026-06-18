@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     neo4j_password: str = ""  # SECURITY: No default — must be set via env
 
     # --- LLM ---
-    llm_provider: Literal["ollama", "dashscope", "deepseek"] = "ollama"
+    llm_provider: Literal["ollama", "dashscope", "deepseek"] = "deepseek"
 
     # DeepSeek (primary LLM provider, OpenAI-compatible API)
     deepseek_api_key: str = ""
@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # --- MiroMind Deep Research ---
     miromind_api_base: str = "https://api.miromind.ai/v1"
     miromind_api_key: str = ""
-    miromind_default_model: str = "mirothinker-1-7-deepresearch-mini"
+    miromind_default_model: str = "mirothinker-1-7-deepresearch"
     miromind_request_timeout: float = 300.0
     miromind_auto_ingest: bool = True
     miromind_min_tokens: int = 500

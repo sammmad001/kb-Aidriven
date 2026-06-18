@@ -1,16 +1,30 @@
 #!/bin/bash
 # ============================================================
-# 个人知识库 ECS 一键部署脚本
+# [已废弃] 个人知识库 ECS 一键部署脚本
+#
+# ⚠️ 此脚本已废弃，请使用 GitHub Actions CD 流程部署。
+# 当前部署方式：git push → GitHub Actions (.github/workflows/cd.yml) → 自动构建 + 部署到 ECS
+# 详见：https://github.com/sammmad001/kb-Aidriven/blob/main/.github/workflows/cd.yml
+#
+# 本脚本仅供历史参考，不再维护。如需手动部署，请参考以下步骤：
+#   1. 确保 config.py 中 llm_provider 默认值为 deepseek（V2.0 迁移后）
+#   2. 所有的 LLM 调用已迁移到 DeepSeek API（不再依赖 Ollama / DashScope for LLM）
+#   3. DashScope 仅保留用于 ASR (Paraformer) 和 OCR (qwen-vl-max)
+#   4. 新增环境变量：DEEPSEEK_API_KEY, JWT_SECRET, MIROMIND_API_KEY 等
+#
 # 适用系统: Alibaba Cloud Linux / CentOS / Ubuntu
 # 部署路径: /opt/knowledge-base
 #
 # 使用前请设置以下环境变量:
 #   export NEO4J_PASSWORD=<your-neo4j-password>
-#   export DASHSCOPE_API_KEY=<your-dashscope-key>
+#   export DEEPSEEK_API_KEY=<your-deepseek-key>  (V2.0: 替代 DASHSCOPE_API_KEY)
+#   export DASHSCOPE_API_KEY=<your-dashscope-key>  (仅 ASR/OCR)
 #   export FEISHU_APP_ID=<your-feishu-app-id>
 #   export FEISHU_APP_SECRET=<your-feishu-app-secret>
 #   export FEISHU_VERIFICATION_TOKEN=<your-verification-token>
 #   export FEISHU_ENCRYPT_KEY=<your-encrypt-key>
+#   export JWT_SECRET=<your-jwt-secret>  (V2.0: 多用户认证)
+#   export MIROMIND_API_KEY=<your-miromind-key>  (V2.0: 深度研究)
 #   export KNOWLEDGE_API_TOKEN=<your-api-token>
 # ============================================================
 

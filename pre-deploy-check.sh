@@ -87,7 +87,14 @@ echo ""
 echo -e "${BLUE}[2/6] 应用导入检查${NC}"
 
 cd "$KB_DIR" || exit 1
-if python3 -c "from app.main import app" 2>/dev/null; then
+# 检查 Python 版本（应用使用 3.10+ 类型语法 X | None）
+PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
+PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
+PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
+
+if [ -n "$PY_MAJOR" ] && { [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; }; then
+    log_warn "Python ${PY_VERSION} < 3.10，应用使用 3.10+ 类型语法 (X | None)，跳过导入检查"
+elif python3 -c "from app.main import app" 2>/dev/null; then
     log_pass "FastAPI 应用导入成功"
 else
     log_fail "FastAPI 应用导入失败"
@@ -122,6 +129,8 @@ echo -e "${BLUE}[4/6] 前端 TypeScript 类型检查${NC}"
 
 if [ ! -d "$WEB_DIR" ]; then
     log_warn "kb-web 目录不存在，跳过前端检查"
+elif ! command -v node >/dev/null 2>&1; then
+    log_warn "Node.js 未安装，跳过前端检查"
 else
     cd "$WEB_DIR" || exit 1
     
@@ -145,6 +154,8 @@ echo -e "${BLUE}[5/6] 前端构建验证${NC}"
 
 if [ ! -d "$WEB_DIR" ]; then
     log_warn "kb-web 目录不存在，跳过前端构建"
+elif ! command -v node >/dev/null 2>&1; then
+    log_warn "Node.js 未安装，跳过前端构建"
 else
     cd "$WEB_DIR" || exit 1
     

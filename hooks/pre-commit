@@ -3,6 +3,9 @@
 # 检查暂存的 Python 文件编译 + ruff lint + pytest
 set -e
 
+# 确保 pip 安装的二进制优先于 /usr/local/bin 中的损坏版本
+export PATH="$HOME/Library/Python/3.9/bin:$PATH"
+
 echo "🔍 [pre-commit] 自动验证中..."
 
 # 1. 检查暂存的 .py 文件是否有语法错误
