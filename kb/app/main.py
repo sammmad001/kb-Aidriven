@@ -165,13 +165,20 @@ async def lifespan(app: FastAPI):
     logger.info("Intent detection + conversation context initialized (provider=%s, model=%s)",
                 _intent_provider, settings.intent_llm_model)
 
-    # V2.3: Initialize MiroMind deep research client
+    # V2.3: Initialize MiroMind deep research client + persistence tracker
     from app.services.miromind_client import MiroMindClient
+    from app.services.research_tracker import ResearchTracker
 
     _miromind_client = MiroMindClient()
+    _research_tracker = None
     if _miromind_client.is_configured:
-        init_research_service(_miromind_client)
-        logger.info("MiroMind deep research client initialized")
+        _research_tracker = ResearchTracker(_ingest_pipeline.db)
+        # Recover tasks interrupted by server restart
+        recovered = await _research_tracker.recover_interrupted()
+        if recovered > 0:
+            logger.warning("Recovered %d interrupted research tasks (marked as failed)", recovered)
+        init_research_service(_miromind_client, _research_tracker)
+        logger.info("MiroMind deep research client initialized (with persistence tracking)")
     else:
         logger.info("MiroMind API key not set — /research command disabled")
 

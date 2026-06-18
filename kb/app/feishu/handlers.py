@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from app.auth.user_store import UserStore
     from app.services.ingest_tracker import IngestTracker
     from app.services.miromind_client import MiroMindClient
+    from app.services.research_tracker import ResearchTracker
 
 # Lazy imports for social services (to avoid hard dependency)
 try:
@@ -119,6 +120,7 @@ _context: ConversationContext | None = None
 
 # MiroMind deep research (set by init_research_service)
 _miromind_client: "MiroMindClient | None" = None
+_research_tracker: "ResearchTracker | None" = None
 
 # Current Feishu sender open_id for this async context (set by dispatch_message)
 _current_open_id: ContextVar[str] = ContextVar("current_open_id", default="")
@@ -164,10 +166,14 @@ def init_intent_context(
     _context = context
 
 
-def init_research_service(miromind_client: "MiroMindClient") -> None:
-    """Initialize MiroMind deep research service."""
-    global _miromind_client
+def init_research_service(
+    miromind_client: "MiroMindClient",
+    research_tracker: "ResearchTracker | None" = None,
+) -> None:
+    """Initialize MiroMind deep research service + persistence tracker."""
+    global _miromind_client, _research_tracker
     _miromind_client = miromind_client
+    _research_tracker = research_tracker
 
 
 # ======================================================================
@@ -272,6 +278,8 @@ async def handle_text(content: dict, message_id: str) -> None:
         await handle_search(args, message_id)
     elif cmd == "research":
         await handle_research(args, message_id)
+    elif cmd == "research_status":
+        await handle_research_status(message_id)
     elif cmd == "recent":
         await handle_recent(message_id, args)
     elif cmd == "end":
@@ -753,31 +761,61 @@ async def handle_research(question: str, message_id: str) -> None:
         await _feishu_client.reply_message(message_id, card)
         return
 
+    # Create persistent task record (survives server restart)
+    task_id = ""
+    if _research_tracker:
+        try:
+            task_id = await _research_tracker.create_task(question, message_id)
+        except Exception as exc:
+            logger.warning("Failed to create research task record: %s", exc)
+
     # Instant acknowledgment
-    await _feishu_client.reply_text(message_id, "🔬 正在调用 MiroMind 进行深度研究，请耐心等待...")
+    await _feishu_client.reply_text(
+        message_id,
+        f"🔬 正在调用 MiroMind 进行深度研究，请耐心等待...\n"
+        f"📋 任务ID: {task_id[:8] if task_id else 'N/A'}\n"
+        f"💡 发送 /rs 随时查看进度",
+    )
 
     # Run research in background
     task = asyncio.create_task(
-        _run_research_and_send(question, message_id)
+        _run_research_and_send(question, message_id, task_id)
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
 
-async def _run_research_and_send(question: str, message_id: str) -> None:
-    """Background task: run MiroMind research → ingest into KB → send result card."""
+async def _run_research_and_send(question: str, message_id: str, task_id: str = "") -> None:
+    """Background task: run MiroMind research → ingest into KB → send result card.
+
+    V1.2.6: Full lifecycle tracking via ResearchTracker. Each phase is persisted
+    so users can query status and interrupted tasks are recoverable on restart.
+    """
     if not _feishu_client or not _miromind_client:
         return
 
-    # Step 1: Call MiroMind API (non-streaming)
+    # Phase 1: Mark as running
+    if task_id and _research_tracker:
+        try:
+            await _research_tracker.mark_running(task_id)
+        except Exception as exc:
+            logger.warning("Failed to mark research task running: %s", exc)
+
+    # Phase 2: Call MiroMind API (non-streaming)
     result = await _miromind_client.research(question)
 
     if result.status == "error":
+        # Persist failure
+        if task_id and _research_tracker:
+            try:
+                await _research_tracker.mark_failed(task_id, result.error or "Unknown error")
+            except Exception as exc:
+                logger.warning("Failed to mark research task failed: %s", exc)
         card = build_research_result_card(question, result)
         await _feishu_client.reply_message(message_id, card)
         return
 
-    # Step 2: Auto-ingest into knowledge base
+    # Phase 3: Auto-ingest into knowledge base
     ingest_summary = ""
     settings = None
     try:
@@ -808,9 +846,86 @@ async def _run_research_and_send(question: str, message_id: str) -> None:
             logger.warning("Research auto-ingest failed: %s", exc)
             ingest_summary = f"入库失败: {exc}"
 
-    # Step 3: Send result card
+    # Phase 4: Persist completion + send result card
+    if task_id and _research_tracker:
+        try:
+            await _research_tracker.mark_completed(
+                task_id,
+                content=result.content,
+                model=result.model,
+                total_tokens=result.total_tokens,
+                duration_ms=result.duration_ms,
+                ingest_summary=ingest_summary,
+            )
+        except Exception as exc:
+            logger.warning("Failed to mark research task completed: %s", exc)
+
     card = build_research_result_card(question, result, ingest_summary)
     await _feishu_client.reply_message(message_id, card)
+
+
+# ======================================================================
+# Research Status Query
+# ======================================================================
+
+async def handle_research_status(message_id: str) -> None:
+    """Handle /research-status (or /rs): show recent research tasks."""
+    if not _feishu_client:
+        return
+
+    if not _research_tracker:
+        await _feishu_client.reply_text(
+            message_id,
+            "⚠️ 研究任务追踪未启用（数据库未连接）",
+        )
+        return
+
+    try:
+        tasks = await _research_tracker.get_recent_tasks(limit=5)
+    except Exception as exc:
+        logger.warning("Failed to query research tasks: %s", exc)
+        await _feishu_client.reply_text(message_id, "⚠️ 查询研究任务失败，请稍后重试")
+        return
+
+    if not tasks:
+        await _feishu_client.reply_text(
+            message_id,
+            "📋 暂无研究任务记录\n💡 发送 /research <主题> 开始一次深度研究",
+        )
+        return
+
+    # Build text summary
+    lines = ["📋 **最近研究任务**", ""]
+    status_emoji = {
+        "completed": "✅",
+        "running": "🔄",
+        "pending": "⏳",
+        "failed": "❌",
+    }
+    for t in tasks:
+        emoji = status_emoji.get(t.get("status", ""), "❓")
+        q = (t.get("question") or "")[:40]
+        tid = (t.get("task_id") or "")[:8]
+        status = t.get("status", "unknown")
+        line = f"{emoji} `{tid}` {q}"
+        if status == "completed":
+            tokens = t.get("result_tokens", 0) or 0
+            dur = t.get("duration_ms", 0) or 0
+            ingest = t.get("ingest_summary", "")
+            extra = f" · {tokens} tokens · {dur}ms"
+            if ingest:
+                extra += f" · {ingest}"
+            line += extra
+        elif status == "failed":
+            err = (t.get("error") or "")[:60]
+            line += f"\n   └ 错误: {err}"
+        elif status == "running":
+            line += " · 进行中..."
+        lines.append(line)
+
+    lines.append("")
+    lines.append("💡 使用 /research <主题> 开始新的研究")
+    await _feishu_client.reply_text(message_id, "\n".join(lines))
 
 
 # ======================================================================
@@ -942,6 +1057,10 @@ def parse_command(text: str) -> tuple[str, str]:
     m = re.match(r'^/research\s+(.+)', text, re.IGNORECASE)
     if m:
         return "research", m.group(1).strip()
+
+    # /research-status or /rs — query recent research task status
+    if re.match(r'^/(?:research-status|rs)(?:\s.*)?$', text, re.IGNORECASE):
+        return "research_status", ""
 
     m = re.match(r'^/recent\s*(.*)', text, re.IGNORECASE)
     if m:
