@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Fixed prompt prefix injected into every research request.
 # Ensures output is concise and well-structured.
 LENGTH_CONSTRAINT = (
+    "[Language] 请务必使用中文回答。\n"
     "[Output Requirement] Please keep your response concise and well-structured. "
     "The total output must not exceed 2000 characters. Focus on key findings "
     "and actionable insights. Use clear headings and bullet points."

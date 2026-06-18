@@ -220,23 +220,79 @@ class Preprocessor:
     # ------------------------------------------------------------------
 
     async def _extract_pdf(self, raw_bytes: bytes, file_name: str) -> tuple[str, str]:
-        """Extract text from PDF using pymupdf."""
+        """Extract text from PDF, with OCR fallback for scanned/image-based PDFs.
+
+        Strategy:
+            1. Try pymupdf text-layer extraction (fast, works for digital PDFs)
+            2. If text < 50 chars, render each page as image and run OCR
+               (PaddleOCR → qwen-vl-max), reusing the existing ImageOCRExtractor
+            3. If OCR also fails, raise RuntimeError with friendly message
+        """
         try:
             import fitz  # pymupdf
         except ImportError:
             raise RuntimeError("PDF 处理需要安装 pymupdf: pip install pymupdf")
 
-        try:
-            doc = fitz.open(stream=raw_bytes, filetype="pdf")
-            pages = [page.get_text() for page in doc]
+        # Step 1: Try text-layer extraction
+        doc = fitz.open(stream=raw_bytes, filetype="pdf")
+        pages_text = [page.get_text() for page in doc]
+        content = "\n\n".join(pages_text)
+
+        if len(content.strip()) >= 50:
             doc.close()
-            content = "\n\n".join(pages)
-            if len(content.strip()) < 50:
-                raise ValueError("PDF 提取内容为空或过短")
             return content, self._slugify(file_name)
-        except Exception as exc:
-            logger.warning("PDF extraction failed: %s", exc)
-            raise RuntimeError(f"PDF 提取失败: {exc}")
+
+        # Step 2: OCR fallback for scanned/image-based PDFs
+        logger.info(
+            "PDF text layer too short (%d chars), trying OCR fallback for %d pages...",
+            len(content.strip()), len(doc),
+        )
+        try:
+            from app.config import get_settings
+            from app.ingest.ocr import ImageOCRExtractor
+
+            settings = get_settings()
+            ocr = ImageOCRExtractor(
+                dashscope_api_key=settings.dashscope_api_key,
+                paddle_enabled=True,
+            )
+
+            ocr_texts: list[str] = []
+            for page in doc:
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                img_b64 = base64.b64encode(img_bytes).decode()
+                result = await ocr.extract(img_b64)
+                if result.text.strip():
+                    ocr_texts.append(result.text)
+                    logger.debug(
+                        "PDF page OCR: engine=%s, text_len=%d",
+                        result.engine, len(result.text),
+                    )
+
+            doc.close()
+
+            ocr_content = "\n\n".join(ocr_texts)
+            if len(ocr_content.strip()) >= 50:
+                logger.info(
+                    "PDF OCR fallback succeeded: %d chars from %d pages",
+                    len(ocr_content), len(ocr_texts),
+                )
+                return ocr_content, self._slugify(file_name)
+
+            # Both text extraction and OCR failed
+            raise ValueError(
+                "PDF 内容提取失败：文本层为空且 OCR 未识别到有效文字。"
+                "该 PDF 可能是完全图片型或加密文档。"
+            )
+        except ValueError:
+            raise
+        except Exception as ocr_exc:
+            doc.close()
+            logger.warning("PDF OCR fallback failed: %s", ocr_exc)
+            raise RuntimeError(
+                f"PDF 提取失败：文本层为空且 OCR 回退失败 ({ocr_exc})"
+            )
 
     def _extract_docx(self, raw_bytes: bytes, file_name: str) -> tuple[str, str]:
         """Extract text from DOCX. Minimal implementation using zipfile."""

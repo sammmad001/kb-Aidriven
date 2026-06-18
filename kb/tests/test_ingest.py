@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,7 +13,7 @@ from app.ingest.preprocess import Preprocessor
 from app.ingest.analyze import Analyzer
 from app.ingest.graph_process import GraphProcessor
 from app.ingest.render import MarkdownRenderer
-from app.models import InputFormat, MaterialType
+from app.models import InputFormat, MaterialType, OCRResult
 
 from tests.conftest import MockLLMClient, MockNeo4jDatabase
 
@@ -73,6 +74,83 @@ class TestPreprocessor:
         # Both files exist
         assert os.path.exists(result1.raw_path)
         assert os.path.exists(result2.raw_path)
+
+    @pytest.mark.asyncio
+    async def test_extract_pdf_ocr_fallback(self):
+        """Scanned PDF: text layer empty → OCR fallback should extract text."""
+        from unittest.mock import AsyncMock
+
+        # Mock fitz: pages return empty text, but pixmap renders images
+        mock_page = MagicMock()
+        mock_page.get_text.return_value = ""  # empty text layer (scanned PDF)
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG\r\n\x1a\n"
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        # Use side_effect so each iteration gets a fresh iterator
+        mock_doc.__iter__ = MagicMock(side_effect=lambda: iter([mock_page, mock_page]))
+        mock_doc.__len__ = MagicMock(return_value=2)
+        mock_doc.close = MagicMock()
+
+        mock_fitz = MagicMock()
+        mock_fitz.open.return_value = mock_doc
+
+        # Mock ImageOCRExtractor to return OCR text (must be >= 50 chars total)
+        mock_ocr_result = OCRResult(
+            text="这是通过OCR技术从PDF扫描件中提取的文字内容。该PDF的文本层为空，系统自动启用了OCR回退机制。",
+            engine="paddle",
+            confidence=0.9,
+            duration_ms=100.0,
+        )
+
+        with patch.dict("sys.modules", {"fitz": mock_fitz}):
+            with patch("app.ingest.ocr.ImageOCRExtractor") as MockOCR:
+                mock_ocr_instance = MagicMock()
+                mock_ocr_instance.extract = AsyncMock(return_value=mock_ocr_result)
+                MockOCR.return_value = mock_ocr_instance
+
+                content, title = await self.preprocessor._extract_pdf(
+                    b"fake-pdf-bytes", "scanned-document.pdf"
+                )
+
+        assert "OCR" in content
+        assert len(content.strip()) >= 50
+
+    @pytest.mark.asyncio
+    async def test_extract_pdf_ocr_also_fails(self):
+        """Both text layer and OCR fail → should raise RuntimeError with friendly message."""
+        from unittest.mock import AsyncMock
+
+        mock_page = MagicMock()
+        mock_page.get_text.return_value = ""  # empty text
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"\x89PNG\r\n\x1a\n"
+        mock_page.get_pixmap.return_value = mock_pix
+
+        mock_doc = MagicMock()
+        mock_doc.__iter__ = MagicMock(side_effect=lambda: iter([mock_page]))
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.close = MagicMock()
+
+        mock_fitz = MagicMock()
+        mock_fitz.open.return_value = mock_doc
+
+        # Mock OCR returning empty text
+        mock_ocr_result = OCRResult(
+            text="", engine="none", confidence=0.0, duration_ms=50.0,
+        )
+
+        with patch.dict("sys.modules", {"fitz": mock_fitz}):
+            with patch("app.ingest.ocr.ImageOCRExtractor") as MockOCR:
+                mock_ocr_instance = MagicMock()
+                mock_ocr_instance.extract = AsyncMock(return_value=mock_ocr_result)
+                MockOCR.return_value = mock_ocr_instance
+
+                with pytest.raises(ValueError, match="OCR 未识别到有效文字"):
+                    await self.preprocessor._extract_pdf(
+                        b"fake-pdf-bytes", "encrypted-document.pdf"
+                    )
 
 
 # ======================================================================
