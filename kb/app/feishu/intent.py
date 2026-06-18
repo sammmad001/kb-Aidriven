@@ -1,13 +1,16 @@
-"""Intent detection: classify user text as QUERY or INPUT.
+"""Intent detection: classify user text as QUERY, INPUT, or RESEARCH.
 
 Three-layer architecture:
-  ① Explicit command prefix (/q, /search) → handled by parse_command, not here
-  ② Rule engine (synchronous, 0ms) — strong signals for query vs input
-  ③ LLM quick judgment (qwen-turbo, ~300ms, timeout=2s) — for ambiguous cases
+  ① Explicit command prefix (/q, /search, /research) → handled by parse_command
+  ② Rule engine (synchronous, 0ms) — strong signals for research/query/input
+  ③ LLM quick judgment (deepseek-v4-flash, ~300ms, timeout=2s) — for ambiguous cases
 
 Safety bias: when in doubt, treat as INPUT (safe default).
 Misclassifying a query as input just means the user types /q once more.
 Misclassifying an input as a query causes silent data loss.
+
+Research intent is detected first (before query) because research phrases like
+"帮我研究X" should route to MiroMind even if they end with a question mark.
 """
 
 from __future__ import annotations
@@ -21,11 +24,18 @@ from app.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
-IntentType = Literal["query", "input"]
+IntentType = Literal["query", "input", "research"]
 
 # ---------------------------------------------------------------------------
 # Rule-based signal patterns
 # ---------------------------------------------------------------------------
+
+# Research signals: deep research / analysis requests that should route to MiroMind
+_RESEARCH_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(深度研究|深入研究|帮我研究|研究一下|深度分析|详细分析|全面分析)"),
+    re.compile(r"(用miromind|调用miromind|用MiroMind|调用MiroMind)", re.IGNORECASE),
+    re.compile(r"(帮我.{0,4}研究|请.{0,4}研究|帮我.{0,4}分析)"),
+]
 
 # Strong query signals: interrogative endings or question words
 _QUERY_PATTERNS: list[re.Pattern[str]] = [
@@ -77,7 +87,13 @@ class IntentDetector:
         if not stripped:
             return "input"
 
-        # Layer 2a: Strong query signals (immediate, 0ms)
+        # Layer 2a: Research signals (checked FIRST — before query patterns)
+        # "帮我研究X" should route to MiroMind even if it ends with ?
+        for pattern in _RESEARCH_PATTERNS:
+            if pattern.search(stripped):
+                return "research"
+
+        # Layer 2b: Strong query signals (immediate, 0ms)
         for pattern in _QUERY_PATTERNS:
             if pattern.search(stripped):
                 return "query"
@@ -111,12 +127,13 @@ class IntentDetector:
         Timeout or any error → 'input' (safe fallback).
         """
         system_prompt = (
-            "你是一个意图分类器。判断用户输入是要查询知识库还是存入知识库。\n"
+            "你是一个意图分类器。判断用户输入是要查询知识库、存入知识库、还是深度研究。\n"
             "查询：提问、寻求信息、寻找关系。\n"
             "存入：分享知识、笔记、陈述事实、记录信息。\n"
-            "只输出一个词：QUERY 或 INPUT"
+            "研究：要求深度研究、深入分析、全面调研某个话题。\n"
+            "只输出一个词：QUERY、INPUT 或 RESEARCH"
         )
-        user_prompt = f"用户输入：{text[:200]}\n\n请判断意图，只输出 QUERY 或 INPUT："
+        user_prompt = f"用户输入：{text[:200]}\n\n请判断意图，只输出 QUERY、INPUT 或 RESEARCH："
 
         try:
             raw = await asyncio.wait_for(
@@ -124,6 +141,8 @@ class IntentDetector:
                 timeout=self._llm_timeout,
             )
             result = raw.strip().upper()
+            if "RESEARCH" in result:
+                return "research"
             if "QUERY" in result:
                 return "query"
             if "INPUT" in result:

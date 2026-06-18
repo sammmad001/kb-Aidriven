@@ -1,8 +1,9 @@
 """MiroMind API client: non-streaming deep research integration.
 
-Calls MiroMind's Responses API with stream=False to get a complete response
-in a single HTTP round-trip. Injects a fixed LENGTH_CONSTRAINT prompt to
-ensure the output stays concise (≤2000 characters).
+Calls MiroMind's Chat Completions API (OpenAI-compatible) with a single POST
+to /v1/chat/completions to get a complete response in one HTTP round-trip.
+Injects a fixed LENGTH_CONSTRAINT prompt to ensure the output stays concise
+(≤2000 characters).
 
 The result is converted to a MiroMindAdapter-compatible payload for ingestion
 into the knowledge base pipeline.
@@ -66,9 +67,9 @@ class ResearchResult:
 
 
 class MiroMindClient:
-    """Non-streaming MiroMind API client.
+    """Non-streaming MiroMind API client (OpenAI Chat Completions format).
 
-    Sends a single POST to /v1/responses with stream=False and waits for
+    Sends a single POST to /v1/chat/completions and waits for
     the complete JSON response. No SSE parsing required.
     """
 
@@ -113,13 +114,14 @@ class MiroMindClient:
                 error="MIROMIND_API_KEY not configured",
             )
 
-        # Inject fixed length constraint prompt
-        enriched_input = f"{LENGTH_CONSTRAINT}\n\n{question}"
+        # Inject fixed length constraint prompt into user message
+        enriched_content = f"{LENGTH_CONSTRAINT}\n\n{question}"
         use_model = model or self._default_model
         payload: dict[str, Any] = {
             "model": use_model,
-            "input": enriched_input,
-            "stream": False,
+            "messages": [
+                {"role": "user", "content": enriched_content},
+            ],
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -132,7 +134,7 @@ class MiroMindClient:
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(
-                    f"{self._api_base}/responses",
+                    f"{self._api_base}/chat/completions",
                     json=payload,
                     headers=headers,
                 )
@@ -182,25 +184,35 @@ class MiroMindClient:
     def _parse_response(
         self, data: dict[str, Any], model: str, duration_ms: int
     ) -> ResearchResult:
-        """Parse the non-streaming JSON response from MiroMind API.
+        """Parse the Chat Completions JSON response from MiroMind API.
 
-        Expected response structure (OpenAI Responses API format):
+        Expected response structure (OpenAI Chat Completions format):
         {
             "id": "...",
-            "status": "completed",
             "model": "...",
-            "output": [
+            "choices": [
                 {
-                    "type": "message",
-                    "content": [{"type": "output_text", "text": "..."}]
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "..."
+                    },
+                    "finish_reason": "stop"
                 }
             ],
             "usage": {"total_tokens": 1234, ...}
         }
         """
-        status = data.get("status", "completed")
-        if status in ("failed", "error", "cancelled"):
-            error_info = data.get("error", {})
+        # Extract content from choices[0].message.content
+        choices = data.get("choices", [])
+        content = ""
+        if isinstance(choices, list) and len(choices) > 0:
+            message = choices[0].get("message", {})
+            content = message.get("content", "") or ""
+
+        # Check for error in response body
+        error_info = data.get("error")
+        if error_info:
             return ResearchResult(
                 content="",
                 thinking_text="",
@@ -208,62 +220,25 @@ class MiroMindClient:
                 status="error",
                 model=data.get("model", model),
                 duration_ms=duration_ms,
-                error=str(error_info) if error_info else f"status={status}",
+                error=str(error_info),
             )
 
-        # Extract output text content
-        content_parts: list[str] = []
-        thinking_parts: list[str] = []
-        tool_events: list[dict[str, Any]] = []
-
-        output = data.get("output", [])
-        if isinstance(output, list):
-            for item in output:
-                item_type = item.get("type", "")
-
-                if item_type == "message":
-                    # Extract text from content array
-                    for content_item in item.get("content", []):
-                        if content_item.get("type") == "output_text":
-                            content_parts.append(content_item.get("text", ""))
-
-                elif item_type == "reasoning":
-                    # Extract reasoning/thinking text
-                    for summary in item.get("summary", []):
-                        thinking_parts.append(summary.get("text", ""))
-
-                elif item_type == "tool_call":
-                    # Record tool events for adapter
-                    tool_name = item.get("name", "")
-                    tool_events.append({
-                        "type": tool_name,
-                        "name": tool_name,
-                        "arguments": item.get("arguments", {}),
-                        "content": str(item.get("result", ""))[:500],
-                    })
-
-        # Fallback: some APIs return content directly
-        content = "\n".join(content_parts).strip()
-        if not content:
-            content = data.get("content", "")
-
-        thinking_text = "\n".join(thinking_parts).strip()
         total_tokens = data.get("usage", {}).get("total_tokens", 0)
         resp_model = data.get("model", model)
 
         logger.info(
-            "MiroMind research completed: status=%s tokens=%d duration=%dms content_len=%d",
-            status, total_tokens, duration_ms, len(content),
+            "MiroMind research completed: tokens=%d duration=%dms content_len=%d",
+            total_tokens, duration_ms, len(content),
         )
 
         return ResearchResult(
-            content=content,
-            thinking_text=thinking_text,
+            content=content.strip(),
+            thinking_text="",
             total_tokens=total_tokens,
-            status=status,
+            status="completed",
             model=resp_model,
             duration_ms=duration_ms,
-            tool_events=tool_events,
+            tool_events=[],
         )
 
     async def health_check(self) -> bool:

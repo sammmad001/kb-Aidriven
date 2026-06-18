@@ -111,14 +111,13 @@ class TestMiroMindClient:
 
     @pytest.mark.asyncio
     async def test_research_injects_length_constraint(self, configured_client: MiroMindClient):
-        """Research should inject LENGTH_CONSTRAINT into the input."""
-        mock_response = AsyncMock()
+        """Research should inject LENGTH_CONSTRAINT into the user message."""
+        mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "status": "completed",
             "model": "test-model",
-            "output": [
-                {"type": "message", "content": [{"type": "output_text", "text": "Research result"}]},
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "Research result"}, "finish_reason": "stop"},
             ],
             "usage": {"total_tokens": 500},
         }
@@ -138,31 +137,33 @@ class TestMiroMindClient:
 
             await configured_client.research("量子计算")
 
+        # Verify payload uses Chat Completions format
+        assert "messages" in captured_payload
+        assert len(captured_payload["messages"]) == 1
+        assert captured_payload["messages"][0]["role"] == "user"
         # Verify LENGTH_CONSTRAINT was injected
-        assert LENGTH_CONSTRAINT in captured_payload["input"]
-        assert "量子计算" in captured_payload["input"]
-        assert captured_payload["stream"] is False
+        assert LENGTH_CONSTRAINT in captured_payload["messages"][0]["content"]
+        assert "量子计算" in captured_payload["messages"][0]["content"]
 
     @pytest.mark.asyncio
     async def test_research_parses_response(self, configured_client: MiroMindClient):
-        """Research should correctly parse a valid API response."""
-        mock_response = AsyncMock()
+        """Research should correctly parse a Chat Completions API response."""
+        mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json = MagicMock(return_value={
-            "status": "completed",
-            "model": "mirothinker-1-7-deepresearch",
-            "output": [
+        mock_response.json.return_value = {
+            "model": "mirothinker-1-7-deepresearch-mini",
+            "choices": [
                 {
-                    "type": "reasoning",
-                    "summary": [{"text": "Analyzing the question..."}],
-                },
-                {
-                    "type": "message",
-                    "content": [{"type": "output_text", "text": "量子计算利用量子叠加..."}],
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "量子计算利用量子叠加原理，在量子比特上进行运算...",
+                    },
+                    "finish_reason": "stop",
                 },
             ],
             "usage": {"total_tokens": 1200},
-        })
+        }
 
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -175,14 +176,13 @@ class TestMiroMindClient:
 
         assert result.status == "completed"
         assert "量子叠加" in result.content
-        assert "Analyzing" in result.thinking_text
         assert result.total_tokens == 1200
-        assert result.model == "mirothinker-1-7-deepresearch"
+        assert result.model == "mirothinker-1-7-deepresearch-mini"
 
     @pytest.mark.asyncio
     async def test_research_http_error(self, configured_client: MiroMindClient):
         """HTTP non-200 should return error result."""
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
 

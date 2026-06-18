@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # --- MiroMind Deep Research ---
     miromind_api_base: str = "https://api.miromind.ai/v1"
     miromind_api_key: str = ""
-    miromind_default_model: str = "mirothinker-1-7-deepresearch"
+    miromind_default_model: str = "mirothinker-1-7-deepresearch-mini"
     miromind_request_timeout: float = 300.0
     miromind_auto_ingest: bool = True
     miromind_min_tokens: int = 500

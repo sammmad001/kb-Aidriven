@@ -98,6 +98,40 @@ class TestIntentDetection:
         assert await detector_no_llm.detect("") == "input"
         assert await detector_no_llm.detect("   ") == "input"
 
+    # ------------------------------------------------------------------
+    # Research intent detection tests
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_research_keyword_1(self, detector_no_llm: IntentDetector):
+        """'深度研究' should be classified as research."""
+        result = await detector_no_llm.detect("帮我深度研究量子计算最新进展")
+        assert result == "research"
+
+    @pytest.mark.asyncio
+    async def test_research_keyword_2(self, detector_no_llm: IntentDetector):
+        """'深入研究' should be classified as research."""
+        result = await detector_no_llm.detect("深入研究RAG技术的发展趋势")
+        assert result == "research"
+
+    @pytest.mark.asyncio
+    async def test_research_keyword_3(self, detector_no_llm: IntentDetector):
+        """'深度分析' should be classified as research."""
+        result = await detector_no_llm.detect("深度分析一下向量数据库的竞争格局")
+        assert result == "research"
+
+    @pytest.mark.asyncio
+    async def test_research_overrides_question_mark(self, detector_no_llm: IntentDetector):
+        """Research keyword should take priority over question mark."""
+        result = await detector_no_llm.detect("帮我研究一下量子计算？")
+        assert result == "research"
+
+    @pytest.mark.asyncio
+    async def test_normal_query_still_works(self, detector_no_llm: IntentDetector):
+        """Normal query without research keywords should still be classified as query."""
+        result = await detector_no_llm.detect("什么是知识图谱？")
+        assert result == "query"
+
     @pytest.mark.asyncio
     async def test_llm_timeout_falls_back_to_input(self):
         """When LLM times out, should fall back to safe default 'input'."""

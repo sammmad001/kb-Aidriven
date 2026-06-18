@@ -295,14 +295,28 @@ async def handle_text(content: dict, message_id: str) -> None:
                 await _handle_social_url(social_url, platform, message_id)
                 return
 
-        # Intent auto-detection: classify as query or input
+        # Fast research keyword pre-check (before intent detection)
+        # Catches obvious research requests so they skip the intent pipeline
+        if _miromind_client and _miromind_client.is_configured:
+            _research_kw = (
+                "深度研究", "深入研究", "帮我研究", "研究一下",
+                "深度分析", "详细分析", "全面分析",
+                "用miromind", "调用miromind",
+            )
+            if any(kw in text.lower() for kw in _research_kw):
+                await handle_research(text, message_id)
+                return
+
+        # Intent auto-detection: classify as query, input, or research
         user_id = Neo4jDatabase.get_current_user_id_or_default()
         has_ctx = _context.has_active_context(user_id) if _context else False
         if _intent_detector:
             intent = await _intent_detector.detect(text, has_recent_query=has_ctx)
         else:
             intent = "input"  # safe default when detector unavailable
-        if intent == "query":
+        if intent == "research":
+            await handle_research(text, message_id)
+        elif intent == "query":
             await handle_query(text, message_id, user_id=user_id)
         else:
             await handle_ingest_text(text, message_id)
