@@ -261,8 +261,17 @@ class Preprocessor:
     # ------------------------------------------------------------------
 
     def _save_raw(self, content: str, title: str) -> str:
-        """Save content to raw/sources/{user_id}/ with date-prefixed filename."""
-        raw_dir = self._user_raw_dir()
+        """Save content to raw/sources/{user_id}/ with date-prefixed filename.
+
+        Returns the filepath on success, or empty string if saving fails
+        (raw archival is non-critical — ingestion should not be blocked).
+        """
+        try:
+            raw_dir = self._user_raw_dir()
+        except (PermissionError, OSError) as exc:
+            logger.warning("Cannot create raw directory (ingestion continues): %s", exc)
+            return ""
+
         date_str = datetime.now().strftime("%Y-%m-%d")
         filename = f"{date_str}-{self._slugify(title)}.md"
         filepath = os.path.join(raw_dir, filename)
@@ -274,8 +283,12 @@ class Preprocessor:
             filepath = os.path.join(raw_dir, filename)
             counter += 1
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+        except (PermissionError, OSError) as exc:
+            logger.warning("Cannot save raw file (ingestion continues): %s", exc)
+            return ""
 
         return filepath
 

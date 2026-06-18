@@ -74,6 +74,11 @@ jobs:
              echo '✅ 依赖安装成功' || \
              (echo '❌ 依赖安装失败，终止部署' && exit 1)"
 
+      - name: Fix directory ownership
+        run: |
+          ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
+            "chown -R kbuser:kbuser /opt/knowledge-base/raw /opt/knowledge-base/wiki /opt/knowledge-base/data 2>/dev/null || true"
+
       - name: Restart service
         run: |
           ssh -o ConnectTimeout=10 ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} \
