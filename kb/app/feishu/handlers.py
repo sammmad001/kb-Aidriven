@@ -41,6 +41,7 @@ from app.models import (
     InputFormat,
     QueryRequest,
     SocialPlatform,
+    TaskStatusEnum,
 )
 
 if TYPE_CHECKING:
@@ -1007,6 +1008,17 @@ async def _run_pipeline_and_send(
                      "file_name": file_name, "file_mime": file_mime},
         )
         result = await _pipeline.run(request)
+
+        # Check pipeline status — FAILED should not be shown as success
+        if result.status == TaskStatusEnum.FAILED:
+            if _tracker:
+                await _tracker.mark_failed(source_id, result.error or "pipeline failed")
+            err_msg = result.error or "处理失败"
+            # PDF 提取错误已经是友好提示，保留原文
+            if "PDF 提取" not in err_msg and "PDF 内容提取" not in err_msg:
+                err_msg = f"知识处理失败: {err_msg}"
+            await send_error(message_id, err_msg)
+            return
 
         # Track completion with token usage
         if _tracker:

@@ -242,10 +242,12 @@ class Preprocessor:
             doc.close()
             return content, self._slugify(file_name)
 
-        # Step 2: OCR fallback for scanned/image-based PDFs
+        # Step 2: OCR fallback for scanned/image-based PDFs (parallel)
+        MAX_OCR_PAGES = 30
+        page_count = len(doc)
         logger.info(
-            "PDF text layer too short (%d chars), trying OCR fallback for %d pages...",
-            len(content.strip()), len(doc),
+            "PDF text layer too short (%d chars), trying OCR fallback for %d/%d pages...",
+            len(content.strip()), min(page_count, MAX_OCR_PAGES), page_count,
         )
         try:
             from app.config import get_settings
@@ -257,26 +259,30 @@ class Preprocessor:
                 paddle_enabled=True,
             )
 
-            ocr_texts: list[str] = []
-            for page in doc:
+            # Render all pages to images (sync, very fast)
+            images_b64: list[str] = []
+            for i, page in enumerate(doc):
+                if i >= MAX_OCR_PAGES:
+                    logger.warning(
+                        "PDF has %d pages, only OCR first %d",
+                        page_count, MAX_OCR_PAGES,
+                    )
+                    break
                 pix = page.get_pixmap(dpi=200)
                 img_bytes = pix.tobytes("png")
-                img_b64 = base64.b64encode(img_bytes).decode()
-                result = await ocr.extract(img_b64)
-                if result.text.strip():
-                    ocr_texts.append(result.text)
-                    logger.debug(
-                        "PDF page OCR: engine=%s, text_len=%d",
-                        result.engine, len(result.text),
-                    )
+                images_b64.append(base64.b64encode(img_bytes).decode())
 
             doc.close()
+
+            # Batch OCR all pages in parallel (uses asyncio.gather internally)
+            results = await ocr.extract_batch(images_b64)
+            ocr_texts = [r.text for r in results if r.text.strip()]
 
             ocr_content = "\n\n".join(ocr_texts)
             if len(ocr_content.strip()) >= 50:
                 logger.info(
-                    "PDF OCR fallback succeeded: %d chars from %d pages",
-                    len(ocr_content), len(ocr_texts),
+                    "PDF OCR fallback succeeded: %d chars from %d/%d pages",
+                    len(ocr_content), len(ocr_texts), page_count,
                 )
                 return ocr_content, self._slugify(file_name)
 
@@ -288,7 +294,6 @@ class Preprocessor:
         except ValueError:
             raise
         except Exception as ocr_exc:
-            doc.close()
             logger.warning("PDF OCR fallback failed: %s", ocr_exc)
             raise RuntimeError(
                 f"PDF 提取失败：文本层为空且 OCR 回退失败 ({ocr_exc})"

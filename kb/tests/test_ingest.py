@@ -96,7 +96,7 @@ class TestPreprocessor:
         mock_fitz = MagicMock()
         mock_fitz.open.return_value = mock_doc
 
-        # Mock ImageOCRExtractor to return OCR text (must be >= 50 chars total)
+        # Mock ImageOCRExtractor.extract_batch to return list of OCR results
         mock_ocr_result = OCRResult(
             text="这是通过OCR技术从PDF扫描件中提取的文字内容。该PDF的文本层为空，系统自动启用了OCR回退机制。",
             engine="paddle",
@@ -107,7 +107,10 @@ class TestPreprocessor:
         with patch.dict("sys.modules", {"fitz": mock_fitz}):
             with patch("app.ingest.ocr.ImageOCRExtractor") as MockOCR:
                 mock_ocr_instance = MagicMock()
-                mock_ocr_instance.extract = AsyncMock(return_value=mock_ocr_result)
+                # extract_batch returns a list of OCRResult
+                mock_ocr_instance.extract_batch = AsyncMock(
+                    return_value=[mock_ocr_result, mock_ocr_result]
+                )
                 MockOCR.return_value = mock_ocr_instance
 
                 content, title = await self.preprocessor._extract_pdf(
@@ -119,7 +122,7 @@ class TestPreprocessor:
 
     @pytest.mark.asyncio
     async def test_extract_pdf_ocr_also_fails(self):
-        """Both text layer and OCR fail → should raise RuntimeError with friendly message."""
+        """Both text layer and OCR fail → should raise ValueError with friendly message."""
         from unittest.mock import AsyncMock
 
         mock_page = MagicMock()
@@ -144,7 +147,9 @@ class TestPreprocessor:
         with patch.dict("sys.modules", {"fitz": mock_fitz}):
             with patch("app.ingest.ocr.ImageOCRExtractor") as MockOCR:
                 mock_ocr_instance = MagicMock()
-                mock_ocr_instance.extract = AsyncMock(return_value=mock_ocr_result)
+                mock_ocr_instance.extract_batch = AsyncMock(
+                    return_value=[mock_ocr_result]
+                )
                 MockOCR.return_value = mock_ocr_instance
 
                 with pytest.raises(ValueError, match="OCR 未识别到有效文字"):
