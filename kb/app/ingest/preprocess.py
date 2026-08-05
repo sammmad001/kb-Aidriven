@@ -39,6 +39,13 @@ class Preprocessor:
         else:
             self._transcriber = AudioTranscriber(dashscope_api_key="")
 
+        # 图片 OCR 提取器（PaddleOCR 免费本地 + qwen-vl-max 付费兜底）
+        from app.ingest.ocr import ImageOCRExtractor
+        self._ocr = ImageOCRExtractor(
+            dashscope_api_key=settings.dashscope_api_key,
+            paddle_enabled=getattr(settings, "social_ocr_paddle_enabled", True),
+        )
+
     def _user_raw_dir(self) -> str:
         """Get user-scoped raw directory for file isolation."""
         uid = Neo4jDatabase.get_current_user_id_or_default()
@@ -148,15 +155,14 @@ class Preprocessor:
                 return f"Binary file: {file_name} ({file_mime})", self._slugify(file_name)
 
     async def _process_image(self, source: str, **kwargs: Any) -> tuple[str, str]:
-        """Image: save raw, mark as OCR placeholder."""
+        """Image: save raw file, then OCR extract text content."""
         title = kwargs.get("file_name", "image")
-        content = "[Image uploaded - OCR pending]\n\nImage data stored in raw sources."
-        # Save the raw image
+
+        # ① Save the raw image for archival
         try:
             raw_bytes = base64.b64decode(source)
             raw_dir = self._user_raw_dir()
             img_path = os.path.join(raw_dir, f"{datetime.now().strftime('%Y-%m-%d')}-{self._slugify(title)}")
-            # Append extension if known
             ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
             mime = kwargs.get("file_mime", "")
             ext = ext_map.get(mime, ".img")
@@ -164,6 +170,23 @@ class Preprocessor:
                 f.write(raw_bytes)
         except Exception as exc:
             logger.warning("Image save failed: %s", exc)
+
+        # ② OCR extract text from image
+        try:
+            ocr_result = await self._ocr.extract(source)
+            if ocr_result.text.strip():
+                logger.info(
+                    "Image OCR succeeded: engine=%s, text_len=%d, %.0fms",
+                    ocr_result.engine, len(ocr_result.text), ocr_result.duration_ms,
+                )
+                content = ocr_result.text
+            else:
+                logger.warning("Image OCR returned empty text")
+                content = "[图片上传 - OCR未能识别文字内容]\n\n图片已保存至原始目录。"
+        except Exception as exc:
+            logger.warning("Image OCR failed: %s", exc)
+            content = f"[图片上传 - OCR失败: {exc}]\n\n图片已保存至原始目录。"
+
         return content, self._slugify(title)
 
     async def _process_audio(self, source: str, **kwargs: Any) -> tuple[str, str]:

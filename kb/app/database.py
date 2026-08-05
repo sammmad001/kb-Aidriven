@@ -290,7 +290,7 @@ class Neo4jDatabase:
             return {"node_id": exact_result_old.get("id"), "matched_by": "exact", "match_confidence": 1.0}
 
         exact_by_name = await self.execute_read_for_user(
-            "MATCH (n) WHERE n.name = $name RETURN n.id AS id LIMIT 1",
+            "MATCH (n) WHERE n.name = $name AND n.user_id = $_user_id RETURN n.id AS id LIMIT 1",
             {"name": name},
         )
         if exact_by_name:
@@ -305,7 +305,7 @@ class Neo4jDatabase:
         # Also check if any existing node's name is in our aliases list
         for alias in aliases:
             alias_name_match = await self.execute_read_for_user(
-                "MATCH (n) WHERE n.name = $name RETURN n.id AS id LIMIT 1",
+                "MATCH (n) WHERE n.name = $name AND n.user_id = $_user_id RETURN n.id AS id LIMIT 1",
                 {"name": alias},
             )
             if alias_name_match:

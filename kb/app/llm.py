@@ -110,7 +110,7 @@ class OllamaClient(LLMClient):
 class DashScopeClient(LLMClient):
     """DashScope (Alibaba Cloud / 百炼) LLM client using OpenAI-compatible API.
 
-    Timeout reduced from 120s to 30s (P2 fix).
+    Read timeout 120s — reasoning models need extended time on complex prompts.
     """
 
     BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -118,7 +118,7 @@ class DashScopeClient(LLMClient):
     def __init__(self, api_key: str, model: str) -> None:
         self._api_key = api_key
         self._default_model = model
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0))
 
     async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
         effective_model = model or self._default_model
@@ -170,8 +170,8 @@ class ResilientLLMClient(LLMClient):
 
     # Fallback tiers: (model_name, max_retries, base_backoff_seconds)
     _DASHSCOPE_FALLBACKS: list[tuple[str, int, float]] = [
-        ("qwen3.5-plus", 1, 1.0),
-        ("qwen-flash", 1, 2.0),
+        ("qwen3.7-plus", 1, 1.0),
+        ("qwen3.5-plus", 1, 2.0),
         ("qwen-turbo", 1, 4.0),
     ]
     _DEEPSEEK_FALLBACKS: list[tuple[str, int, float]] = [
@@ -245,14 +245,15 @@ class DeepSeekClient(LLMClient):
     """DeepSeek LLM client using OpenAI-compatible API.
 
     Used as the primary LLM provider for all pipeline stages.
-    Timeout set to 30s — DeepSeek API typically responds within 2-8s.
+    Read timeout 120s — reasoning models need extended time on complex analysis.
     """
 
     def __init__(self, api_key: str, model: str, base_url: str = "https://api.deepseek.com") -> None:
         self._api_key = api_key
         self._default_model = model
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=30.0)  # DeepSeek API responds in 2-8s typically
+        # Reasoning models (deepseek-v4-pro/flash) can take 60-90s on complex analysis prompts
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0))
 
     async def chat(self, system: str, user: str, json_mode: bool = False, model: str | None = None, _usage: "TokenUsage | None" = None) -> str:
         effective_model = model or self._default_model
@@ -309,6 +310,18 @@ def get_llm_client(settings: Settings) -> LLMClient:
         inner = DashScopeClient(settings.dashscope_api_key, settings.dashscope_model)
         return ResilientLLMClient(inner, "dashscope")
     return OllamaClient(settings.ollama_base_url, settings.ollama_model)
+
+
+def get_image_llm_client(settings: Settings) -> LLMClient:
+    """Factory: create a DashScope client for image analysis.
+
+    Image analysis uses qwen3.7-plus (DashScope) instead of DeepSeek,
+    because qwen models have stronger multimodal/vision understanding.
+    """
+    if not settings.dashscope_api_key:
+        raise ValueError("DASHSCOPE_API_KEY is required for image analysis")
+    inner = DashScopeClient(settings.dashscope_api_key, settings.dashscope_model_analyze)
+    return ResilientLLMClient(inner, "dashscope")
 
 
 def get_intent_llm_client(settings: Settings) -> LLMClient | None:

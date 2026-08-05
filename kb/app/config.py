@@ -43,11 +43,11 @@ class Settings(BaseSettings):
     asr_enabled: bool = True                     # 是否启用音频转写（关闭则降级为 placeholder）
     asr_model: str = "paraformer-realtime-v2"    # Paraformer 实时语音识别模型
 
-    # DashScope 分环节模型分配（已废弃 — 迁移到 DeepSeek，保留用于向后兼容）
-    dashscope_model_analyze: str = "qwen-turbo"     # Step 2 分析分类（轻量任务）
-    dashscope_model_compile: str = "qwen3.5-plus"   # Step 3b 页面编写（质量关键）
-    dashscope_model_reasoning: str = "qwen3.5-plus"  # Step 3c 隐式推理（P0升级：flash→plus）
-    dashscope_model_query: str = "qwen3.5-plus"     # Query 回答生成（用户面向）
+    # DashScope 分环节模型分配（仅用于图片分析，其余均用 DeepSeek）
+    dashscope_model_analyze: str = "qwen3.7-plus"     # Step 2 图片分析（多模态推理）
+    dashscope_model_compile: str = "qwen3.5-plus"   # Step 3b 页面编写（已废弃，保留兼容）
+    dashscope_model_reasoning: str = "qwen3.5-plus"  # Step 3c 隐式推理（已废弃）
+    dashscope_model_query: str = "qwen3.5-plus"     # Query 回答生成（已废弃）
 
     # Intent detection LLM (独立于主管线)
     intent_llm_provider: Literal["dashscope", "deepseek"] = "deepseek"

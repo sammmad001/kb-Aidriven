@@ -12,10 +12,11 @@ from app.ingest.analyze import Analyzer
 from app.ingest.graph_process import GraphProcessor
 from app.ingest.preprocess import Preprocessor
 from app.ingest.render import MarkdownRenderer
-from app.llm import LLMClient, get_llm_client
+from app.llm import LLMClient, get_llm_client, get_image_llm_client
 from app.models import (
     IngestRequest,
     IngestResult,
+    InputFormat,
     TaskStatus,
     TaskStatusEnum,
     TokenUsage,
@@ -31,8 +32,10 @@ class IngestPipeline:
         self._settings = settings
         self._db = Neo4jDatabase(settings)
         self._llm: LLMClient | None = None
+        self._image_llm: LLMClient | None = None
         self._preprocessor: Preprocessor | None = None
         self._analyzer: Analyzer | None = None
+        self._image_analyzer: Analyzer | None = None
         self._graph_processor: GraphProcessor | None = None
         self._renderer: MarkdownRenderer | None = None
         self._initialized = False
@@ -68,6 +71,9 @@ class IngestPipeline:
         self._llm = get_llm_client(self._settings)
         self._preprocessor = Preprocessor(self._settings)
         self._analyzer = Analyzer(self._llm, self._db, model=self._settings.deepseek_model_analyze)
+        # 图片分析使用 DashScope/qwen3.7-plus（多模态推理更强）
+        self._image_llm = get_image_llm_client(self._settings)
+        self._image_analyzer = Analyzer(self._image_llm, self._db, model=self._settings.dashscope_model_analyze)
         self._graph_processor = GraphProcessor(
             self._llm, self._db,
             compile_model=self._settings.deepseek_model_compile,
@@ -78,7 +84,11 @@ class IngestPipeline:
         logger.info("IngestPipeline initialized.")
 
     async def shutdown(self) -> None:
-        """Close database connection."""
+        """Close database connection and LLM clients."""
+        if self._llm:
+            await self._llm.close()
+        if self._image_llm:
+            await self._image_llm.close()
         await self._db.close()
         self._initialized = False
 
@@ -116,10 +126,16 @@ class IngestPipeline:
             timings["preprocess"] = round(time.monotonic() - t0, 3)
 
             # Step 2: Analyze & Classify (LLM call 1)
+            # 图片用 DashScope/qwen3.7-plus，其余用 DeepSeek
             t0 = time.monotonic()
             self._tasks[task_id].progress = "analyzing"
             step2_usage = TokenUsage()
-            analysis = await self._analyzer.analyze(
+            analyzer = (
+                self._image_analyzer
+                if preprocess_result.format == InputFormat.IMAGE
+                else self._analyzer
+            )
+            analysis = await analyzer.analyze(
                 raw_content=preprocess_result.content,
                 raw_path=preprocess_result.raw_path,
                 _usage=step2_usage,
